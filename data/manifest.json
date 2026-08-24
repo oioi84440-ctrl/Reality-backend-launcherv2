@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-03T00:00:00.000Z",
+  "launcher": {
+    "latestVersion": "1.0.0",
+    "downloadUrl": "",
+    "notes": "Versão inicial do Reality Client",
+    "sha256": "",
+    "size": 0,
+    "mandatory": false,
+    "platforms": {}
+  },
+  "terms": {
+    "version": "1.0.0",
+    "title": "Termos de Uso e Licença do Reality Client",
+    "effectiveAt": "2026-08-18"
+  },
+  "discord": {
+    "reality": "https://discord.gg/JJHScuCf8y",
+    "kowa": "https://discord.gg/6jRn5jKCnd"
+  },
+  "features": {
+    "autoCapeMod": true,
+    "hideCoreMods": true,
+    "offlineSkins": true
+  },
+  "announcement": {
+    "enabled": false,
+    "title": "",
+    "message": "",
+    "url": ""
+  },
+  "creators": [],
+  "topDonors": [],
+  "codes": {
+    "RELEASE": {
+      "visual": "reality-aurora",
+      "badge": "Membro do Reality",
+      "usesLeft": null
+    },
+    "BRMC": {
+      "badge": "Parceiro BRMC",
+      "role": "Parceiro BRMC",
+      "cape": "brmc.png",
+      "usesLeft": null
+    }
+  }
+}
