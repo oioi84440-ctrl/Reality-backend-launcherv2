@@ -34,14 +34,10 @@
   "topDonors": [],
   "codes": {
     "RELEASE": {
-      "visual": "reality-aurora",
+      "visual": "reality-galaxy",
       "badge": "Membro do Reality",
-      "usesLeft": null
-    },
-    "BRMC": {
-      "badge": "Parceiro BRMC",
-      "role": "Parceiro BRMC",
-      "cape": "brmc.png",
+      "cape": "reality_bolt.png",
+      "role": "Membro do Reality",
       "usesLeft": null
     }
   }

@@ -136,3 +136,21 @@ O endpoint público aplica limite de tentativas por endereço, valida expiraçã
 evita resgates duplicados e serializa os resgates para reduzir o risco de duas
 requisições consumirem o mesmo uso. Para produção com múltiplas instâncias,
 migre os códigos para um banco com transação/lock distribuído.
+
+## Social (amigos / chat / presença)
+
+Endpoints novos (v1.1):
+
+- `POST /api/social/login` — `{ username }` → token
+- `POST /api/social/heartbeat` — presença online
+- `GET /api/social/friends`
+- `GET /api/social/requests`
+- `POST /api/social/friends/request` — `{ username }`
+- `POST /api/social/friends/accept|decline` — `{ requestId }`
+- `POST /api/social/friends/remove` — `{ friendId }`
+- `GET /api/social/messages/:friendId`
+- `POST /api/social/messages` — `{ toUserId, text }`
+
+Dados em `data/social/*.json`.
+
+Após atualizar o código, faça redeploy do backend (Render/Railway) para os clientes usarem o social.
