@@ -368,8 +368,15 @@ app.post('/api/admin/launcher', requireAdmin, (req, res) => {
   }
 });
 
+// ---------- Social (amigos, pedidos, chat, presença) ----------
+const { createSocial } = require('./social');
+const social = createSocial(DATA_DIR);
+social.mount(app);
+
 app.listen(PORT, () => {
   ensureData();
+  social.ensure();
   console.log(`[Reality Backend] http://0.0.0.0:${PORT}`);
+  console.log(`[Reality Backend] Social: /api/social/*`);
   console.log(`[Reality Backend] Admin token: ${ADMIN_TOKEN === 'troque-este-token' ? '(PADRÃO — mude ADMIN_TOKEN!)' : '(custom)'}`);
 });
