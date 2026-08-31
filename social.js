@@ -128,6 +128,7 @@ function createSocial(dataDir) {
       user.token = newToken();
       user.lastSeen = Date.now();
       user.status = 'online';
+      user.placeholder = false;
       if (displayName) user.displayName = String(displayName).trim().slice(0, 24);
       saveUser(user);
     }
@@ -209,11 +210,21 @@ function createSocial(dataDir) {
       err.status = 400;
       throw err;
     }
-    const target = findUserByName(toUsername);
+    let target = findUserByName(toUsername);
+    // Se o nick ainda não abriu o social, cria placeholder offline.
+    // Quando a pessoa conectar, o login reaproveita o mesmo registro.
     if (!target) {
-      const err = new Error('user_not_found');
-      err.status = 404;
-      throw err;
+      target = {
+        id: newId('u'),
+        username: String(toUsername).trim(),
+        displayName: String(toUsername).trim().slice(0, 24),
+        token: null,
+        status: 'offline',
+        lastSeen: 0,
+        createdAt: new Date().toISOString(),
+        placeholder: true
+      };
+      saveUser(target);
     }
     ensure();
     const graph = readJson(FRIENDS_FILE, {});

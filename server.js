@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const presence = require('./presence');
 const cors = require('cors');
 
 const PORT = process.env.PORT || 3000;
@@ -183,11 +184,24 @@ setInterval(() => {
 
 app.post('/api/presence/heartbeat', (req, res) => {
   const uuid = String((req.body && req.body.uuid) || '').trim();
-  const name = String((req.body && req.body.name) || '').trim().slice(0, 32);
+  const name = String((req.body && (req.body.name || req.body.username)) || '').trim().slice(0, 32);
+  const capeId = req.body && req.body.capeId != null ? String(req.body.capeId).slice(0, 64) : null;
   if (!uuid || !/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
     return res.status(400).json({ error: 'invalid_uuid' });
   }
-  onlineRealityUsers.set(uuid.toLowerCase(), { name, lastSeen: Date.now() });
+  const key = uuid.toLowerCase();
+  const prev = onlineRealityUsers.get(key) || {};
+  onlineRealityUsers.set(key, {
+    name: name || prev.name || '',
+    capeId: capeId !== null ? capeId : (prev.capeId || null),
+    lastSeen: Date.now()
+  });
+  // Persistência em disco (capas entre reinícios curtos do backend)
+  try {
+    if (typeof presence !== 'undefined' && presence.heartbeat) {
+      presence.heartbeat({ uuid: key, username: name, capeId: capeId !== null ? capeId : prev.capeId });
+    }
+  } catch (_) {}
   res.json({ ok: true });
 });
 
@@ -196,12 +210,30 @@ app.get('/api/presence/online', (_req, res) => {
   const list = [];
   for (const [uuid, info] of onlineRealityUsers.entries()) {
     if (now - info.lastSeen <= PRESENCE_TTL_MS) {
-      list.push({ uuid, name: info.name });
+      list.push({ uuid, name: info.name, capeId: info.capeId || null, launcher: true });
     } else {
-      onlineRealityUsers.delete(uuid); // limpa quem expirou, de brinde
+      onlineRealityUsers.delete(uuid);
     }
   }
-  res.json({ users: list });
+  res.json({ users: list, players: list });
+});
+
+/** Consulta por lista de UUIDs (mod in-game) */
+app.get('/api/presence', (req, res) => {
+  const raw = String(req.query.uuids || '').trim();
+  const want = raw ? raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean) : [];
+  const now = Date.now();
+  const list = [];
+  for (const [uuid, info] of onlineRealityUsers.entries()) {
+    if (now - info.lastSeen > PRESENCE_TTL_MS) {
+      onlineRealityUsers.delete(uuid);
+      continue;
+    }
+    if (!want.length || want.includes(uuid) || want.includes(uuid.replace(/-/g, ''))) {
+      list.push({ uuid, name: info.name, capeId: info.capeId || null, launcher: true });
+    }
+  }
+  res.json({ ok: true, players: list, users: list });
 });
 
 /** Manifesto completo — o launcher puxa isso no boot */
