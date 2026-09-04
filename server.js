@@ -215,7 +215,11 @@ app.get('/api/presence/online', (_req, res) => {
       onlineRealityUsers.delete(uuid);
     }
   }
-  res.json({ users: list, players: list });
+  // count real + piso de exibição (>= 100) para o contador do launcher
+  const real = list.length;
+  const DISPLAY_FLOOR = Math.max(100, parseInt(process.env.ONLINE_DISPLAY_FLOOR || '100', 10) || 100);
+  const display = Math.max(DISPLAY_FLOOR, real + DISPLAY_FLOOR);
+  res.json({ ok: true, count: display, real, users: list, players: list });
 });
 
 /** Consulta por lista de UUIDs (mod in-game) */
@@ -404,6 +408,43 @@ app.post('/api/admin/launcher', requireAdmin, (req, res) => {
 const { createSocial } = require('./social');
 const social = createSocial(DATA_DIR);
 social.mount(app);
+
+
+// ---------- Reality Guard reports (donos) ----------
+const guardReports = [];
+const GUARD_ADMIN_KEY = process.env.GUARD_ADMIN_KEY || process.env.ADMIN_KEY || 'reality-guard-admin';
+const MAX_GUARD_REPORTS = 500;
+
+app.post('/api/guard/report', (req, res) => {
+  try {
+    const body = req.body || {};
+    const report = {
+      id: 'g_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      at: Date.now(),
+      username: String(body.username || body.name || 'unknown').slice(0, 32),
+      uuid: String(body.uuid || '').slice(0, 64),
+      hits: Array.isArray(body.hits) ? body.hits.slice(0, 40) : [],
+      version: String(body.version || '').slice(0, 32),
+      reason: String(body.reason || 'guard').slice(0, 64)
+    };
+    guardReports.unshift(report);
+    if (guardReports.length > MAX_GUARD_REPORTS) guardReports.length = MAX_GUARD_REPORTS;
+    console.log('[guard]', report.username, report.hits.length, 'hit(s)');
+    res.json({ ok: true, id: report.id });
+  } catch (e) {
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.get('/api/guard/reports', (req, res) => {
+  const key = String(req.query.key || req.headers['x-admin-key'] || '');
+  if (key !== GUARD_ADMIN_KEY) {
+    return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10) || 50));
+  res.json({ ok: true, total: guardReports.length, reports: guardReports.slice(0, limit) });
+});
+
 
 app.listen(PORT, () => {
   ensureData();
