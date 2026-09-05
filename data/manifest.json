@@ -2,10 +2,10 @@
   "version": 1,
   "updatedAt": "2026-08-03T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.2.1",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.2.2/Reality-Client-Setup-1.2.2.exe",
+    "latestVersion": "1.2.3",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.2.3/Reality-Client-Setup-1.2.3.exe",
     "notes": "PETECTO PETECTO",
-    "sha256": "be4c3a71e44fa8d02f9c2aef1e24f8f1551d0f8093c8febb2669d84f88578ccc",
+    "sha256": "5a94a06f72d64ba91c0e2e920d69b6a92e548762503b13b888786cba98d3cede",
     "size": 0,
     "mandatory": false,
     "platforms": {}
