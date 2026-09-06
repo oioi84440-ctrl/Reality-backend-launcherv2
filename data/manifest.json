@@ -2,9 +2,9 @@
   "version": 1,
   "updatedAt": "2026-08-03T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.2.3",
+    "latestVersion": "1.0.0",
     "downloadUrl": "",
-    "notes": "PETECTO PETECTO",
+    "notes": "Versão inicial do Reality Client",
     "sha256": "",
     "size": 0,
     "mandatory": false,
