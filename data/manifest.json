@@ -39,6 +39,14 @@
       "cape": "reality_bolt.png",
       "role": "Membro do Reality",
       "usesLeft": null
+    },
+    "RLTY-3247-3287-MUNDOMC": {
+      "visual": null,
+      "badge": "Parceiro MundoMC",
+      "cape": "capa_mundomc.png",
+      "role": "Parceiro MundoMC",
+      "usesLeft": 1,
+      "redeemedBy": []
     }
   }
 }
