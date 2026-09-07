@@ -47,6 +47,14 @@
       "role": "Parceiro MundoMC",
       "usesLeft": 1,
       "redeemedBy": []
+    },
+    "RLTY-3247-3287-OWNER": {
+      "visual": null,
+      "badge": "Dono do Reality",
+      "cape": null,
+      "role": "Dono do Reality Client",
+      "usesLeft": 7,
+      "redeemedBy": []
     }
   }
 }
