@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-03T00:00:00.000Z",
+  "updatedAt": "2026-09-19T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.0.0",
+    "latestVersion": "1.2.0",
     "downloadUrl": "",
-    "notes": "Versão inicial do Reality Client",
+    "notes": "Lançamento público Reality Client — performance, Guard anti-FP, capas, servidores, estabilidade.",
     "sha256": "",
     "size": 0,
     "mandatory": false,
@@ -25,10 +25,10 @@
     "offlineSkins": true
   },
   "announcement": {
-    "enabled": false,
-    "title": "",
-    "message": "",
-    "url": ""
+    "enabled": true,
+    "title": "Reality Client — Lançamento",
+    "message": "Bem-vindo ao Reality Client! Entre no Discord para novidades, códigos e suporte.",
+    "url": "https://discord.gg/JJHScuCf8y"
   },
   "creators": [],
   "topDonors": [],

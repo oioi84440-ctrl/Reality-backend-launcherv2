@@ -31,6 +31,30 @@ const redeemAttempts = new Map();
 let redeemQueue = Promise.resolve();
 
 const app = express();
+
+// Rate limit simples em memória (anti flood / raid básico)
+const rateLimitMap = new Map();
+function rateLimit(ip, key, max, windowMs) {
+  const id = String(ip || 'unknown') + '|' + key;
+  const now = Date.now();
+  let bucket = rateLimitMap.get(id);
+  if (!bucket || now > bucket.reset) {
+    bucket = { count: 0, reset: now + windowMs };
+    rateLimitMap.set(id, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > max) return false;
+  return true;
+}
+// limpa map periodicamente
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateLimitMap) {
+    if (now > v.reset) rateLimitMap.delete(k);
+  }
+}, 60000);
+
+
 app.use(cors({
   origin(origin, callback) {
     // Requisições sem Origin (launcher, curl e health checks) continuam aceitas.
@@ -41,6 +65,17 @@ app.use(cors({
   }
 }));
 app.use(express.json({ limit: '2mb' }));
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  if (!rateLimit(ip, 'global', 120, 60000)) {
+    return res.status(429).json({ ok: false, error: 'Too many requests' });
+  }
+  next();
+});
+
 
 function clientKey(req) {
   return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown')
@@ -277,6 +312,11 @@ app.get('/api/creators', (_req, res) => {
 });
 
 app.post('/api/redeem', async (req, res) => {
+  const ipR = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  if (!rateLimit(ipR, 'redeem', 10, 60000)) {
+    return res.status(429).json({ ok: false, error: 'Too many redeem attempts' });
+  }
+
   try {
     if (isRateLimited(req)) return res.status(429).json({ error: 'too_many_attempts' });
     const code = String(req.body?.code || '').trim().toUpperCase().slice(0, 64);
