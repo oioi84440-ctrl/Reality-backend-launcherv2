@@ -2,10 +2,10 @@
   "version": 1,
   "updatedAt": "2026-09-19T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.4.2",
-    "downloadUrl": "",
-    "notes": "1.4.2 — Guard interno, mods ocultos, estabilidade.",
-    "sha256": "",
+    "latestVersion": "1.2.0",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.2.0/Reality.Client.Launcher.Setup.1.4.11.exe",
+    "notes": "Nova versão",
+    "sha256": "e6dfb15c63f7f7136fdb1bc8e57788fe02d1bac2eab3d4d84340f0b75491ffcd",
     "size": 0,
     "mandatory": false,
     "platforms": {}
