@@ -2,9 +2,9 @@
   "version": 1,
   "updatedAt": "2026-09-19T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.2.0",
+    "latestVersion": "1.4.2",
     "downloadUrl": "",
-    "notes": "Lançamento público Reality Client — performance, Guard anti-FP, capas, servidores, estabilidade.",
+    "notes": "1.4.2 — Guard interno, mods ocultos, estabilidade.",
     "sha256": "",
     "size": 0,
     "mandatory": false,
@@ -54,6 +54,22 @@
       "cape": null,
       "role": "Dono do Reality Client",
       "usesLeft": 7,
+      "redeemedBy": []
+    },
+    "RLTY-3247-3287-CREATOR": {
+      "visual": null,
+      "badge": "Criador de Conteúdo",
+      "cape": "capa_creator_reality.png",
+      "role": "Criador de Conteúdo da Reality",
+      "usesLeft": 1,
+      "redeemedBy": []
+    },
+    "KOWA": {
+      "visual": null,
+      "badge": "ඞ Kowa KowaMC",
+      "cape": null,
+      "role": "Kowa KowaMC",
+      "usesLeft": 1,
       "redeemedBy": []
     }
   }
