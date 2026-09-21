@@ -2,10 +2,10 @@
   "version": 1,
   "updatedAt": "2026-09-21T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.6.0",
-    "downloadUrl": "",
-    "notes": "1.6.0 — update sem loop, TAB, estabilidade.",
-    "sha256": "",
+    "latestVersion": "1.6.1",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.1/Reality.Client.Launcher.Setup.1.6.1.exe",
+    "notes": "1.6.1 — estabilidade.",
+    "sha256": "dc590456e04fcd1739883c031d2b0d4e0778575692ab07ad9ac741f2eb238e51",
     "size": 0,
     "mandatory": false,
     "platforms": {}
