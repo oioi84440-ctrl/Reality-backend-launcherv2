@@ -2,7 +2,7 @@
   "version": 1,
   "updatedAt": "2026-09-19T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.4.5",
+    "latestVersion": "1.4.15",
     "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.4.5/Reality.Client.Launcher.Setup.1.4.11.exe",
     "notes": "Nova versão",
     "sha256": "2988890038332c462aeba6976a5c5026589fcd4d9bc2f1a0dd7fd056fa7a7e15",
