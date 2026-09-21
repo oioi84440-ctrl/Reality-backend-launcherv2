@@ -204,7 +204,16 @@ app.get('/health', (_req, res) => {
  * O mod manda um heartbeat a cada ~20s; se parar de mandar, expira sozinho.
  */
 const onlineRealityUsers = new Map(); // uuid -> { name, lastSeen }
-const PRESENCE_TTL_MS = 45 * 1000;
+
+/** UUID canónico com hífens (o TAB do Minecraft usa sempre este formato). */
+function normalizeUuid(u) {
+  const h = String(u || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+  if (h.length !== 32) return String(u || '').toLowerCase().trim();
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}
+
+
+const PRESENCE_TTL_MS = 5 * 60 * 1000; // 5 min — evita sumir se o heartbeat atrasar
 
 // Antes, a limpeza de quem expirou só rolava quando alguém chamava
 // GET /api/presence/online. Se nada chamasse essa rota por um tempo (ex:
@@ -224,7 +233,7 @@ app.post('/api/presence/heartbeat', (req, res) => {
   if (!uuid || !/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
     return res.status(400).json({ error: 'invalid_uuid' });
   }
-  const key = uuid.toLowerCase();
+  const key = normalizeUuid(uuid);
   const prev = onlineRealityUsers.get(key) || {};
   onlineRealityUsers.set(key, {
     name: name || prev.name || '',
@@ -252,9 +261,8 @@ app.get('/api/presence/online', (_req, res) => {
   }
   // count real + piso de exibição (>= 100) para o contador do launcher
   const real = list.length;
-  const DISPLAY_FLOOR = Math.max(100, parseInt(process.env.ONLINE_DISPLAY_FLOOR || '100', 10) || 100);
-  const display = Math.max(DISPLAY_FLOOR, real + DISPLAY_FLOOR);
-  res.json({ ok: true, count: display, real, users: list, players: list });
+  // count = REAL (mod TAB + launcher). Nada de inflar — senão parece fake.
+  res.json({ ok: true, count: real, real, users: list, players: list });
 });
 
 /** Consulta por lista de UUIDs (mod in-game) */
@@ -268,7 +276,9 @@ app.get('/api/presence', (req, res) => {
       onlineRealityUsers.delete(uuid);
       continue;
     }
-    if (!want.length || want.includes(uuid) || want.includes(uuid.replace(/-/g, ''))) {
+    const undashed = uuid.replace(/-/g, '');
+    const wantNorm = want.map((w) => normalizeUuid(w));
+    if (!want.length || wantNorm.includes(uuid) || want.includes(uuid) || want.includes(undashed)) {
       list.push({ uuid, name: info.name, capeId: info.capeId || null, launcher: true });
     }
   }

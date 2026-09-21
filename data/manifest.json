@@ -2,9 +2,9 @@
   "version": 1,
   "updatedAt": "2026-09-19T00:00:00.000Z",
   "launcher": {
-    "latestVersion": "1.0.0",
+    "latestVersion": "1.5.0",
     "downloadUrl": "",
-    "notes": "Nova versão",
+    "notes": "1.5.0 — estabilidade, update, multiplayer, capas.",
     "sha256": "",
     "size": 0,
     "mandatory": false,
