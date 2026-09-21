@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-19T00:00:00.000Z",
+  "updatedAt": "2026-09-21T00:00:00.000Z",
   "launcher": {
     "latestVersion": "1.5.1",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.5.1/Reality.Client.Launcher.Setup.1.5.0.exe",
-    "notes": "1.5.0 — estabilidade, update, multiplayer, capas.",
-    "sha256": "366b99f9cb37e5f0c310fbc1bac72579216617e2cfa2fe59c7fe9c9768c5e4ed",
+    "downloadUrl": "",
+    "notes": "1.5.1 — TAB presença entre players, update estável, multiplayer parceiros.",
+    "sha256": "",
     "size": 0,
     "mandatory": false,
     "platforms": {}
