@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.9",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.9/Reality.Client.Launcher.Setup.1.6.9.exe",
-  "notes": "1.6.9 — auto-update completo: baixa, instala sozinho em silencio e REABRE o launcher (fim do loop abre-fecha). Instalador novo com a identidade do Reality, atalhos e pausa durante o jogo.",
-  "sha256": "e96a3ffd49436e3a7fb0219190685c83fd4b3a4d662be6a859f3b666d19c963c",
-  "size": 129795290,
+  "latestVersion": "1.6.10",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.10/Reality.Client.Launcher.Setup.1.6.10.exe",
+  "notes": "1.6.10 — auto-update consertado de verdade: baixa, instala em silencio e REABRE o launcher (fim do loop abre-fecha) + instalador novo com a identidade do Reality.",
+  "sha256": "19ba1aad66d4ed1cd7d6bb4c6ee80282d12a2ec8918822c1174f129ea918de4a",
+  "size": 129795227,
   "mandatory": false,
   "platforms": {}
  },
