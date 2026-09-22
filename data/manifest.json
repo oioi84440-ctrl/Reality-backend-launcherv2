@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.18",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.18/Reality.Client.Launcher.Setup.1.6.18.exe",
-  "notes": "1.6.18 — versao pronta pro lancamento: aba Novidades limpa (so a aba), interface 100% em portugues e sem mencoes a outros clients.",
-  "sha256": "b64deed6f6bd450ba5dc238df89001cd9ff421058df254e24e46cf1a0e12cb07",
-  "size": 130912131,
+  "latestVersion": "1.6.19",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.19/Reality.Client.Launcher.Setup.1.6.19.exe",
+  "notes": "1.6.19 — AUDITORIA DE SEGURANCA + BUGS: correcoes que fecham execucao de codigo, apagamento de pastas e vazamento de credencial pelo launcher. Depois desta, o launcher esta pronto pro lancamento.",
+  "sha256": "7ae2cddfdd4f6ba8d063700b3d375dd83e9e351b0d222d5ae0a9e82c06dfe2e4",
+  "size": 130914859,
   "mandatory": false,
   "platforms": {}
  },
