@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.19",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.19/Reality.Client.Launcher.Setup.1.6.19.exe",
-  "notes": "1.6.19 — AUDITORIA DE SEGURANCA + BUGS: correcoes que fecham execucao de codigo, apagamento de pastas e vazamento de credencial pelo launcher. Depois desta, o launcher esta pronto pro lancamento.",
-  "sha256": "7ae2cddfdd4f6ba8d063700b3d375dd83e9e351b0d222d5ae0a9e82c06dfe2e4",
-  "size": 130914859,
+  "latestVersion": "1.6.20",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.20/Reality.Client.Launcher.Setup.1.6.20.exe",
+  "notes": "1.6.20 — logo no TAB para TODOS os jogadores (nao so voce) e capa-no-lugar-da-elytra em TODAS as versoes (1.21.2 a 1.21.11).",
+  "sha256": "2baf5725b8ebfb6737c5cbaccb6579b159e4de516b213e90d4cdb22464545e46",
+  "size": 130562284,
   "mandatory": false,
   "platforms": {}
  },
