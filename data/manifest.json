@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.12",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.12/Reality.Client.Launcher.Setup.1.6.12.exe",
-  "notes": "1.6.12 — capa no lugar da elytra (estilo Lunar/Feather): a capa aparece e abre como asa ao planar, a elytra some quando você tem capa. Mais: logo no TAB pros outros jogadores e sync de capas entre amigos consertados (authlib 7 + cache de presença).",
-  "sha256": "7a05fcd8bf94e9dca1ee1787b40df62835692130c68d33a38d511c7716819035",
-  "size": 129764292,
+  "latestVersion": "1.6.13",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.13/Reality.Client.Launcher.Setup.1.6.13.exe",
+  "notes": "1.6.13 — release de teste do auto-update (pedido do dono): serve pra confirmar que o launcher baixa, instala e reabre sozinho. Sem mudanca de comportamento.",
+  "sha256": "c6221f882ebb53e0403e023254f6ccddd09e82019ad2de4ab8a1971769d5e75c",
+  "size": 129764298,
   "mandatory": false,
   "platforms": {}
  },
