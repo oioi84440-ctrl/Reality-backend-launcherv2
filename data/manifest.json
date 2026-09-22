@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.6",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.6/Reality.Client.Launcher.Setup.1.6.6.exe",
-  "notes": "1.6.6 — launcher corrigido: nao rouba mais CPU/GPU do jogo (pausa durante a partida), Jogar ~7x mais rapido, anti-cheat e feed de servidores consertados, lista de servidores preservada.",
-  "sha256": "1677cdb73eb8e1467e9c70ca3d39d1ed42fae5109c40d51da082662d274bfd95",
-  "size": 129792901,
+  "latestVersion": "1.6.7",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.7/Reality.Client.Launcher.Setup.1.6.7.exe",
+  "notes": "1.6.7 — instalador novo (escolha de pasta e atalhos) e auto-update consertado: baixa, instala em silencio e reabre o launcher sozinho (fim do loop abre-fecha).",
+  "sha256": "42ffa44b7bb8b98760a6fdc1a388ccca75db180d477e23d312f7471da1d660c2",
+  "size": 129794952,
   "mandatory": false,
   "platforms": {}
  },
