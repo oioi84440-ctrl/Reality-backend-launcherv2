@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.10",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.10/Reality.Client.Launcher.Setup.1.6.10.exe",
-  "notes": "1.6.10 — auto-update consertado de verdade: baixa, instala em silencio e REABRE o launcher (fim do loop abre-fecha) + instalador novo com a identidade do Reality.",
-  "sha256": "19ba1aad66d4ed1cd7d6bb4c6ee80282d12a2ec8918822c1174f129ea918de4a",
-  "size": 129795227,
+  "latestVersion": "1.6.11",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.11/Reality.Client.Launcher.Setup.1.6.11.exe",
+  "notes": "1.6.11 — capas entre amigos e logo no TAB consertados: os dois jars internos foram compilados para APIs antigas e falhavam em silencio no 1.21.11 (authlib 7 e a assinatura nova do renderizador de capa). Corrigido tambem o sync de capas.",
+  "sha256": "47b18a89a86e820e618f1ac7941849e879e8fa509292115ae02e1afe557bfbbe",
+  "size": 129796124,
   "mandatory": false,
   "platforms": {}
  },
