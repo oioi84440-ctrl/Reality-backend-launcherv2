@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.16",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.16/Reality.Client.Launcher.Setup.1.6.16.exe",
-  "notes": "1.6.16 — limpeza pedida pelo dono: fora o aviso de capa oficial e a secao 'Capas locais' (slots/Upload/Abrir pasta/Remover capa) da aba Capa, e fora o card 'Sobre o Reality' (grade + Sugerir RAM/Copiar diagnostico/Discord) das Configuracoes. A galeria 'Capas Reality' continua intacta.",
-  "sha256": "b40500d820af80e87a88a2b95cdab9fdcab1c1c8c7e8229c980d34d2ef0adc6e",
-  "size": 129764087,
+  "latestVersion": "1.6.17",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.17/Reality.Client.Launcher.Setup.1.6.17.exe",
+  "notes": "1.6.17 — aba NOVIDADES: cartaz de lancamento oficial em destaque, chips do que tem no client e o historico das ultimas atualizacoes. Entra na barra de baixo e no menu lateral.",
+  "sha256": "f118631fe42893638c90197a7b098695b99e7eb3ca43d4ad9841f3aec8c5bda9",
+  "size": 130912532,
   "mandatory": false,
   "platforms": {}
  },
