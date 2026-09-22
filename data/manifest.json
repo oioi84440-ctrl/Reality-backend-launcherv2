@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.15",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.15/Reality.Client.Launcher.Setup.1.6.15.exe",
-  "notes": "1.6.15 — auto-update de verdade: o helper agora e criado via 'cmd /c start' (o PowerShell spawnado direto pelo app nao executava o script — descoberto em teste ao vivo) e o launcher so fecha depois que o helper da sinal de vida. Sem isso, o app baixava o update, fechava e nao instalava nada.",
-  "sha256": "17d086f277f5b23354aecf7281fcec461c050cec7db2c6230f9e89a5ab874611",
-  "size": 129764535,
+  "latestVersion": "1.6.16",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.16/Reality.Client.Launcher.Setup.1.6.16.exe",
+  "notes": "1.6.16 — limpeza pedida pelo dono: fora o aviso de capa oficial e a secao 'Capas locais' (slots/Upload/Abrir pasta/Remover capa) da aba Capa, e fora o card 'Sobre o Reality' (grade + Sugerir RAM/Copiar diagnostico/Discord) das Configuracoes. A galeria 'Capas Reality' continua intacta.",
+  "sha256": "b40500d820af80e87a88a2b95cdab9fdcab1c1c8c7e8229c980d34d2ef0adc6e",
+  "size": 129764087,
   "mandatory": false,
   "platforms": {}
  },
