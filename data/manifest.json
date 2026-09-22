@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.11",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.11/Reality.Client.Launcher.Setup.1.6.11.exe",
-  "notes": "1.6.11 — capas entre amigos e logo no TAB consertados: os dois jars internos foram compilados para APIs antigas e falhavam em silencio no 1.21.11 (authlib 7 e a assinatura nova do renderizador de capa). Corrigido tambem o sync de capas.",
-  "sha256": "47b18a89a86e820e618f1ac7941849e879e8fa509292115ae02e1afe557bfbbe",
-  "size": 129796124,
+  "latestVersion": "1.6.12",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.12/Reality.Client.Launcher.Setup.1.6.12.exe",
+  "notes": "1.6.12 — capa no lugar da elytra (estilo Lunar/Feather): a capa aparece e abre como asa ao planar, a elytra some quando você tem capa. Mais: logo no TAB pros outros jogadores e sync de capas entre amigos consertados (authlib 7 + cache de presença).",
+  "sha256": "7a05fcd8bf94e9dca1ee1787b40df62835692130c68d33a38d511c7716819035",
+  "size": 129764292,
   "mandatory": false,
   "platforms": {}
  },
