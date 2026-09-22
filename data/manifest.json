@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.13",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.13/Reality.Client.Launcher.Setup.1.6.13.exe",
-  "notes": "1.6.13 — release de teste do auto-update (pedido do dono): serve pra confirmar que o launcher baixa, instala e reabre sozinho. Sem mudanca de comportamento.",
-  "sha256": "c6221f882ebb53e0403e023254f6ccddd09e82019ad2de4ab8a1971769d5e75c",
-  "size": 129764298,
+  "latestVersion": "1.6.15",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.15/Reality.Client.Launcher.Setup.1.6.15.exe",
+  "notes": "1.6.15 — auto-update de verdade: o helper agora e criado via 'cmd /c start' (o PowerShell spawnado direto pelo app nao executava o script — descoberto em teste ao vivo) e o launcher so fecha depois que o helper da sinal de vida. Sem isso, o app baixava o update, fechava e nao instalava nada.",
+  "sha256": "17d086f277f5b23354aecf7281fcec461c050cec7db2c6230f9e89a5ab874611",
+  "size": 129764535,
   "mandatory": false,
   "platforms": {}
  },
