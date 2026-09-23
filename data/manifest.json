@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.28",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.28/Reality.Client.Launcher.Setup.1.6.28.exe",
+  "latestVersion": "1.6.29",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.29/Reality.Client.Launcher.Setup.1.6.29.exe",
   "notes": "1.6.24 — capas da Copa arrumadas de verdade (mesmo formato das outras capas; a textura estava no layout errado).",
-  "sha256": "4d548c3c1f3cb7276bf2f18db04e6860231033d7f430cef4ccb736e8cb293af7",
-  "size": 134310279,
+  "sha256": "8f9666488a4d8cc5171686df62294357c754c7424ff6316a0bfbd37876a66f28",
+  "size": 134311366,
   "mandatory": false,
   "platforms": {}
  },
