@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.21",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.21/Reality.Client.Launcher.Setup.1.6.21.exe",
-  "notes": "1.6.21 — logo no TAB agora vem do PROPRIO client (funciona de novo na 1.21.9+ e em todas as versoes): o jar de presenca usava a API de fonte antiga e falhava calado. Capa-no-lugar-da-elytra segue em todas as versoes 1.21.2-1.21.11.",
-  "sha256": "e129949275fbf5d55af7bfde8c0a08b481e45bba2fe49bbff839b4c84effd64c",
-  "size": 133758534,
+  "latestVersion": "1.6.22",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.22/Reality.Client.Launcher.Setup.1.6.22.exe",
+  "notes": "1.6.22 — lancamento sexta: loja com as 7 capas da Copa a 250 moedas, economia refeita (ganhe jogando) e UI mais simples (7 abas + sub-abas).",
+  "sha256": "4cfeabcd6fcecf331e80e6cfaaa4aedb456769f0edf63423e328f95423ca7125",
+  "size": 133759423,
   "mandatory": false,
   "platforms": {}
  },
