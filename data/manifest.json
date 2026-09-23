@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.20",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.20/Reality.Client.Launcher.Setup.1.6.20.exe",
-  "notes": "1.6.20 — logo no TAB para TODOS os jogadores (nao so voce) e capa-no-lugar-da-elytra em TODAS as versoes (1.21.2 a 1.21.11).",
-  "sha256": "2baf5725b8ebfb6737c5cbaccb6579b159e4de516b213e90d4cdb22464545e46",
-  "size": 130562284,
+  "latestVersion": "1.6.21",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.21/Reality.Client.Launcher.Setup.1.6.21.exe",
+  "notes": "1.6.21 — logo no TAB agora vem do PROPRIO client (funciona de novo na 1.21.9+ e em todas as versoes): o jar de presenca usava a API de fonte antiga e falhava calado. Capa-no-lugar-da-elytra segue em todas as versoes 1.21.2-1.21.11.",
+  "sha256": "d502fd90d224b9ef221e37256f0e78bf79b608de65a75e27946c155983263c6f",
+  "size": 130598880,
   "mandatory": false,
   "platforms": {}
  },
