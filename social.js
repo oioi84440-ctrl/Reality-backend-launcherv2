@@ -129,10 +129,17 @@ function createSocial(dataDir) {
       // Sem isso, qualquer um que digitasse o nick de outra pessoa recebia um token novo
       // e via o chat/amigos dela (conta offline nao tem senha).
       const presented = String(token || '');
-      if (!presented || presented !== user.token) {
+      // Registro 'placeholder' (criado por um pedido de amizade) ainda nao tem token:
+      // o primeiro login legitimo daquele nick REIVINDICA o registro em vez de ficar travado.
+      const podeReivindicar = !user.token && user.placeholder === true;
+      if (!podeReivindicar && (!presented || presented !== user.token)) {
         const err = new Error('nick_in_use');
         err.status = 403;
         throw err;
+      }
+      if (podeReivindicar) {
+        user.token = newToken();
+        user.placeholder = false;
       }
       user.lastSeen = Date.now();
       user.status = 'online';
