@@ -450,7 +450,7 @@ function createSocial(dataDir) {
     ensure();
     // SEGURANCA: busca minima de 3 e com orcamento por usuario (nao da para varrer a base de nicks).
     const q = normName(query);
-    if (q.length < 3) return { users: [] };
+    if (q.length < 2) return { users: [] };
     if (!searchBudget(me.id, 20, 60_000)) {
       const err = new Error('rate_limited');
       err.status = 429;
@@ -460,7 +460,7 @@ function createSocial(dataDir) {
     const now = Date.now();
     const hits = Object.values(users)
       .filter((u) => u.id !== me.id && normName(u.username).includes(q))
-      .slice(0, 8)
+      .slice(0, 20)
       .map((u) => publicUser(u, now));
     return { users: hits };
   }
