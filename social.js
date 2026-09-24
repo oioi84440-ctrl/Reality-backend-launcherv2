@@ -587,7 +587,7 @@ function createSocial(dataDir) {
     });
   }
 
-  return { mount, ensure };
+  return { mount, ensure, findUserByToken, loginOrRegister };
 }
 
 module.exports = { createSocial };
