@@ -69,7 +69,8 @@ app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  // SEGURANCA: o cliente nao escolhe a propria chave do rate limit (X-Forwarded-For e forjavel).
+  const ip = req.socket.remoteAddress || '';
   if (!rateLimit(ip, 'global', 120, 60000)) {
     return res.status(429).json({ ok: false, error: 'Too many requests' });
   }
@@ -78,8 +79,8 @@ app.use((req, res, next) => {
 
 
 function clientKey(req) {
-  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown')
-    .split(',')[0].trim().slice(0, 80);
+  // SEGURANCA: nunca usar X-Forwarded-For aqui (o cliente forja e cai em bucket novo).
+  return String(req.socket.remoteAddress || 'unknown').slice(0, 80);
 }
 
 function isRateLimited(req) {
@@ -232,6 +233,13 @@ app.post('/api/presence/heartbeat', (req, res) => {
   const capeId = req.body && req.body.capeId != null ? String(req.body.capeId).slice(0, 64) : null;
   if (!uuid || !/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
     return res.status(400).json({ error: 'invalid_uuid' });
+  }
+  // SEGURANCA: name e capeId viram nome de arquivo nos launchers (cape_overrides) - valida aqui tambem.
+  if (name && !/^[A-Za-z0-9_]{1,16}$/.test(name)) {
+    return res.status(400).json({ error: 'invalid_name' });
+  }
+  if (capeId != null && capeId !== '' && !/^[a-z0-9_]{1,32}$/i.test(String(capeId))) {
+    return res.status(400).json({ error: 'invalid_cape' });
   }
   const key = normalizeUuid(uuid);
   const prev = onlineRealityUsers.get(key) || {};
@@ -462,7 +470,9 @@ social.mount(app);
 
 // ---------- Reality Guard reports (donos) ----------
 const guardReports = [];
-const GUARD_ADMIN_KEY = process.env.GUARD_ADMIN_KEY || process.env.ADMIN_KEY || 'reality-guard-admin';
+const GUARD_ADMIN_KEY = process.env.GUARD_ADMIN_KEY || process.env.ADMIN_KEY || '';
+const GUARD_KEY_IS_DEFAULT = !GUARD_ADMIN_KEY;
+if (GUARD_KEY_IS_DEFAULT) console.warn('[guard] GUARD_ADMIN_KEY nao definida - leitura de relatorios desabilitada');
 const MAX_GUARD_REPORTS = 500;
 
 app.post('/api/guard/report', (req, res) => {
@@ -471,9 +481,11 @@ app.post('/api/guard/report', (req, res) => {
     const report = {
       id: 'g_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       at: Date.now(),
-      username: String(body.username || body.name || 'unknown').slice(0, 32),
+      username: String(body.username || body.name || 'unknown').replace(/[\r\n\t]/g, ' ').slice(0, 32),
       uuid: String(body.uuid || '').slice(0, 64),
-      hits: Array.isArray(body.hits) ? body.hits.slice(0, 40) : [],
+      hits: (Array.isArray(body.hits) ? body.hits.slice(0, 40) : []).map((h) => {
+        try { return JSON.stringify(h).slice(0, 400); } catch (_) { return 'invalid_hit'; }
+      }),
       version: String(body.version || '').slice(0, 32),
       reason: String(body.reason || 'guard').slice(0, 64)
     };
@@ -487,6 +499,9 @@ app.post('/api/guard/report', (req, res) => {
 });
 
 app.get('/api/guard/reports', (req, res) => {
+  if (GUARD_KEY_IS_DEFAULT) {
+    return res.status(503).json({ ok: false, error: 'guard_admin_disabled_no_key' });
+  }
   const key = String(req.query.key || req.headers['x-admin-key'] || '');
   if (key !== GUARD_ADMIN_KEY) {
     return res.status(401).json({ ok: false, error: 'unauthorized' });
