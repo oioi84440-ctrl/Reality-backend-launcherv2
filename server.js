@@ -320,6 +320,416 @@ app.get('/api/update', (_req, res) => {
   }
 });
 
+// ---------- Status público (aditivo — não altera nenhuma rota existente) ----------
+// Fonte de dados opcional: <data>/status.json (no VPS: /opt/reality-backend/data/status.json)
+//   { manutencao: bool, aviso: string, launcherStatus: 'estavel'|'atualizando'|'manutencao',
+//     ultimaAuditoria: string, discord: string }
+// Se o arquivo não existir (ou estiver inválido), usa os padrões e segue funcionando.
+const STATUS_FILE = path.join(DATA_DIR, 'status.json');
+const STATUS_PADROES = {
+  manutencao: false,
+  aviso: '',
+  launcherStatus: 'estavel',
+  ultimaAuditoria: null,
+  discord: ''
+};
+
+function lerArquivoStatus() {
+  const dados = { ...STATUS_PADROES };
+  try {
+    if (!fs.existsSync(STATUS_FILE)) return dados;
+    const bruto = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf-8'));
+    if (!bruto || typeof bruto !== 'object') return dados;
+    if (typeof bruto.manutencao === 'boolean') dados.manutencao = bruto.manutencao;
+    if (typeof bruto.aviso === 'string') {
+      dados.aviso = bruto.aviso.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 300);
+    }
+    if (['estavel', 'atualizando', 'manutencao'].indexOf(bruto.launcherStatus) !== -1) {
+      dados.launcherStatus = bruto.launcherStatus;
+    }
+    if (typeof bruto.ultimaAuditoria === 'string') {
+      dados.ultimaAuditoria = bruto.ultimaAuditoria.trim().slice(0, 64) || null;
+    }
+    if (typeof bruto.discord === 'string') {
+      dados.discord = bruto.discord.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200);
+    }
+  } catch (_) {
+    // Arquivo ausente ou inválido: mantém os padrões. Nunca derruba o servidor.
+  }
+  return dados;
+}
+
+function versaoDoLauncher() {
+  try {
+    const m = readManifest();
+    const v = (m && m.launcher && m.launcher.latestVersion) || (m && m.version) || '1.0.0';
+    return String(v).trim().slice(0, 32) || '1.0.0';
+  } catch (_) {
+    return '1.0.0';
+  }
+}
+
+function launcherInfoAtualizadaEm() {
+  try {
+    const m = readManifest();
+    const quando = m && m.updatedAt;
+    if (typeof quando === 'string' && Number.isFinite(Date.parse(quando))) {
+      return new Date(Date.parse(quando)).toISOString();
+    }
+  } catch (_) {}
+  return new Date().toISOString();
+}
+
+function discordDoManifest() {
+  try {
+    const m = readManifest();
+    const d = (m && m.discord) || {};
+    const link = String(d.reality || d.kowa || '').trim();
+    return /^https?:\/\//i.test(link) ? link.slice(0, 200) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function jogadoresOnlineAgora() {
+  try {
+    const agora = Date.now();
+    let total = 0;
+    for (const info of onlineRealityUsers.values()) {
+      if (info && agora - Number(info.lastSeen || 0) <= PRESENCE_TTL_MS) total += 1;
+    }
+    return total;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function montarStatusPublico() {
+  const arquivo = lerArquivoStatus();
+  const manutencaoAtiva = arquivo.manutencao === true;
+  let statusLauncher = arquivo.launcherStatus || 'estavel';
+  if (manutencaoAtiva) statusLauncher = 'manutencao';
+  if (['estavel', 'atualizando', 'manutencao'].indexOf(statusLauncher) === -1) statusLauncher = 'estavel';
+
+  let uptimeSegundos = 0;
+  try { uptimeSegundos = Math.max(0, Math.round(process.uptime())); } catch (_) {}
+  let memoriaMb = 0;
+  try { memoriaMb = Math.round(process.memoryUsage().rss / 1024 / 1024); } catch (_) {}
+
+  const agora = new Date().toISOString();
+  return {
+    ok: true,
+    launcher: {
+      versao: versaoDoLauncher(),
+      status: statusLauncher,
+      atualizadoEm: launcherInfoAtualizadaEm()
+    },
+    servidor: {
+      status: manutencaoAtiva ? 'manutencao' : 'online',
+      uptimeSegundos,
+      agora,
+      memoriaMb
+    },
+    jogadores: { online: jogadoresOnlineAgora() },
+    manutencao: {
+      ativa: manutencaoAtiva,
+      aviso: manutencaoAtiva ? (arquivo.aviso || 'Manutenção em andamento. Voltamos em breve.') : null
+    },
+    seguranca: {
+      ultimaAuditoria: arquivo.ultimaAuditoria || null,
+      observacao: 'Rate limit ativo, CORS restrito e headers de segurança aplicados (nosniff e X-Frame-Options).'
+    },
+    links: {
+      discord: arquivo.discord || discordDoManifest() || null,
+      site: null
+    }
+  };
+}
+
+function renderStatusPage() {
+  let inicial = { ok: false };
+  try { inicial = montarStatusPublico(); } catch (_) {}
+  const inicialJson = JSON.stringify(inicial)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="index,follow">
+<title>Status — Reality Client</title>
+<style>
+:root{--bg:#0d0f14;--card:#161a22;--border:#232a36;--txt:#e8eef7;--muted:#8b95a7;--ok:#3ddc84;--warn:#ffcf4d;--err:#ff5c5c;--link:#7dd3fc}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:26px 18px 44px}
+header{display:flex;align-items:center;gap:10px;margin:2px 0 18px;flex-wrap:wrap}
+.logo{width:11px;height:11px;border-radius:3px;background:var(--ok);box-shadow:0 0 0 4px rgba(61,220,132,.12);flex:0 0 auto}
+header h1{margin:0;font-size:16px;font-weight:650;letter-spacing:.2px}
+header .tag{color:var(--muted);font-size:13px}
+.hero{position:relative;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:26px 24px 22px;margin-bottom:14px;overflow:hidden}
+.hero::before{content:"";position:absolute;top:0;bottom:0;left:0;width:4px;background:var(--ok)}
+.hero.state-atualizando::before,.hero.state-manutencao::before{background:var(--warn)}
+.hero.state-falha::before{background:var(--err)}
+.badge{display:flex;align-items:center;gap:10px;font-size:clamp(22px,4.6vw,30px);font-weight:700;letter-spacing:1.5px;color:var(--ok)}
+.hero.state-atualizando .badge,.hero.state-manutencao .badge{color:var(--warn)}
+.hero.state-falha .badge{color:var(--err)}
+.pulse{width:11px;height:11px;border-radius:50%;background:currentColor;box-shadow:0 0 0 0 currentColor;animation:pulse 2.2s ease-out infinite;flex:0 0 auto}
+@keyframes pulse{0%{box-shadow:0 0 0 0 currentColor;opacity:1}70%{box-shadow:0 0 0 11px transparent;opacity:.85}100%{box-shadow:0 0 0 0 transparent;opacity:1}}
+.desc{color:#c3ccda;font-size:15px;margin:10px 0 0;max-width:64ch}
+.verificado{color:var(--muted);font-size:12.5px;margin:10px 0 0}
+.aviso{background:rgba(255,207,77,.08);border:1px solid rgba(255,207,77,.35);color:#ffe6a8;border-radius:12px;padding:12px 16px;margin:0 0 14px;font-size:14px}
+.aviso.oculto{display:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:15px 16px;display:flex;flex-direction:column;gap:4px}
+.card h2{margin:0;font-size:11.5px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted)}
+.valor{margin:2px 0 0;font-size:20px;font-weight:650;letter-spacing:.2px;word-break:break-word}
+.sub{margin:0;font-size:12.5px;color:var(--muted);word-break:break-word}
+a{color:var(--link);text-decoration:none}
+a:hover{text-decoration:underline}
+a.indisponivel{color:var(--muted);pointer-events:none}
+footer{margin-top:22px;text-align:center;color:var(--muted);font-size:12.5px}
+noscript{display:block;margin-top:12px;color:var(--muted);font-size:13px}
+@media (max-width:560px){.wrap{padding:18px 14px 36px}.hero{padding:20px 18px 18px}}
+@media (max-width:420px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo" aria-hidden="true"></span>
+    <h1>Reality Client</h1>
+    <span class="tag">· Status do serviço</span>
+  </header>
+
+  <section class="hero" id="hero">
+    <div class="badge"><span class="pulse" aria-hidden="true"></span><span id="estado-geral">—</span></div>
+    <p class="desc" id="estado-descricao">Carregando status…</p>
+    <p class="verificado" id="verificado-em">—</p>
+    <noscript>Ative o JavaScript para ver o status atualizado automaticamente.</noscript>
+  </section>
+
+  <div class="aviso oculto" id="aviso-manutencao"><strong>Aviso:</strong> <span id="aviso-texto"></span></div>
+
+  <section class="grid">
+    <article class="card">
+      <h2>Versão do launcher</h2>
+      <p class="valor" id="versao-launcher">—</p>
+      <p class="sub" id="launcher-atualizado">—</p>
+    </article>
+    <article class="card">
+      <h2>Servidor</h2>
+      <p class="valor" id="servidor-status">—</p>
+      <p class="sub" id="servidor-memoria">—</p>
+    </article>
+    <article class="card">
+      <h2>Uptime</h2>
+      <p class="valor" id="uptime">—</p>
+      <p class="sub">Desde o último reinício do backend</p>
+    </article>
+    <article class="card">
+      <h2>Jogadores online</h2>
+      <p class="valor" id="jogadores-online">—</p>
+      <p class="sub">Usando o Reality Client agora</p>
+    </article>
+    <article class="card">
+      <h2>Data e hora</h2>
+      <p class="valor" id="data-hora">—</p>
+      <p class="sub">Horário de Brasília (America/Sao_Paulo)</p>
+    </article>
+    <article class="card">
+      <h2>Segurança</h2>
+      <p class="valor" id="seguranca-auditoria">—</p>
+      <p class="sub" id="seguranca-observacao">—</p>
+    </article>
+    <article class="card">
+      <h2>Links</h2>
+      <p class="valor"><a id="link-discord" class="indisponivel">Não configurado</a></p>
+      <p class="sub">Site: <span id="link-site">Em breve</span></p>
+    </article>
+  </section>
+
+  <footer>Atualizado automaticamente a cada 30 segundos.</footer>
+</div>
+<script>
+var INITIAL_STATUS = ${inicialJson};
+</script>
+<script>
+(function () {
+  var REFRESH_MS = 30000;
+  var ESTADOS = { estavel: 'ESTÁVEL', manutencao: 'MANUTENÇÃO', atualizando: 'ATUALIZANDO' };
+
+  function $(id) { return document.getElementById(id); }
+  function texto(id, valor) {
+    var el = $(id);
+    if (el) el.textContent = (valor === null || valor === undefined || valor === '') ? '—' : String(valor);
+  }
+
+  function formatarUptime(seg) {
+    seg = Math.max(0, Math.floor(Number(seg) || 0));
+    var d = Math.floor(seg / 86400), h = Math.floor((seg % 86400) / 3600), m = Math.floor((seg % 3600) / 60);
+    if (d > 0) return d + 'd ' + h + 'h ' + m + 'min';
+    if (h > 0) return h + 'h ' + m + 'min';
+    if (m > 0) return m + ' min';
+    return seg + ' s';
+  }
+
+  function formatarHoraBrasilia(valor) {
+    var d = valor ? new Date(valor) : new Date();
+    if (isNaN(d.getTime())) d = new Date();
+    try {
+      return new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      }).format(d);
+    } catch (e) {
+      try { return d.toLocaleString('pt-BR'); } catch (e2) { return '—'; }
+    }
+  }
+
+  function linkSeguro(url) {
+    if (typeof url !== 'string') return null;
+    var t = url.trim();
+    return /^https?:\\/\\//i.test(t) ? t : null;
+  }
+
+  function descricaoPara(status, aviso) {
+    if (status === 'manutencao') return aviso || 'Manutenção em andamento. Voltamos em breve.';
+    if (status === 'atualizando') return 'Publicando uma nova versão. O launcher pode ficar indisponível por alguns minutos.';
+    return 'Todos os sistemas operacionais. O launcher está funcionando normalmente.';
+  }
+
+  function rotuloServidor(s) {
+    if (s === 'online') return 'ONLINE';
+    if (s === 'manutencao') return 'EM MANUTENÇÃO';
+    return String(s || '').toUpperCase();
+  }
+
+  function aplicar(dados) {
+    if (!dados || typeof dados !== 'object') return;
+    var launcher = dados.launcher || {};
+    var servidor = dados.servidor || {};
+    var jogadores = dados.jogadores || {};
+    var manutencao = dados.manutencao || {};
+    var seguranca = dados.seguranca || {};
+    var links = dados.links || {};
+
+    var status = String(launcher.status || 'estavel');
+    if (!ESTADOS[status]) status = 'estavel';
+
+    var hero = $('hero');
+    if (hero) hero.className = 'hero state-' + status;
+    texto('estado-geral', ESTADOS[status]);
+    texto('estado-descricao', descricaoPara(status, manutencao.aviso));
+
+    var caixaAviso = $('aviso-manutencao');
+    if (caixaAviso) {
+      if (manutencao.ativa && manutencao.aviso) {
+        texto('aviso-texto', manutencao.aviso);
+        caixaAviso.className = 'aviso';
+      } else {
+        texto('aviso-texto', '');
+        caixaAviso.className = 'aviso oculto';
+      }
+    }
+
+    texto('versao-launcher', launcher.versao);
+    texto('launcher-atualizado', launcher.atualizadoEm ? ('Info atualizada em ' + formatarHoraBrasilia(launcher.atualizadoEm)) : null);
+    texto('servidor-status', rotuloServidor(servidor.status));
+    texto('servidor-memoria', typeof servidor.memoriaMb === 'number' ? ('Memória do processo: ' + servidor.memoriaMb + ' MB') : null);
+    texto('uptime', formatarUptime(servidor.uptimeSegundos));
+    texto('jogadores-online', typeof jogadores.online === 'number' ? jogadores.online : 0);
+    texto('data-hora', formatarHoraBrasilia(servidor.agora));
+    texto('verificado-em', 'Verificado às ' + formatarHoraBrasilia(servidor.agora) + ' (horário de Brasília)');
+
+    if (seguranca.ultimaAuditoria) {
+      var quando = Date.parse(seguranca.ultimaAuditoria);
+      texto('seguranca-auditoria', isNaN(quando) ? seguranca.ultimaAuditoria : ('Auditoria: ' + formatarHoraBrasilia(new Date(quando).toISOString())));
+    } else {
+      texto('seguranca-auditoria', 'Sem auditoria registrada');
+    }
+    texto('seguranca-observacao', seguranca.observacao);
+
+    var elDiscord = $('link-discord');
+    var url = linkSeguro(links.discord);
+    if (elDiscord) {
+      if (url) {
+        elDiscord.textContent = 'Entrar no Discord';
+        elDiscord.setAttribute('href', url);
+        elDiscord.setAttribute('rel', 'noopener noreferrer');
+        elDiscord.setAttribute('target', '_blank');
+        elDiscord.className = '';
+      } else {
+        elDiscord.textContent = 'Discord não configurado';
+        elDiscord.removeAttribute('href');
+        elDiscord.className = 'indisponivel';
+      }
+    }
+    texto('link-site', links.site ? String(links.site) : 'Em breve');
+  }
+
+  function mostrarFalha() {
+    var hero = $('hero');
+    if (hero) hero.className = 'hero state-falha';
+    texto('estado-geral', 'SEM CONEXÃO');
+    texto('estado-descricao', 'Não foi possível atualizar o status agora. Tentando de novo em alguns segundos.');
+    texto('verificado-em', 'Falha na última verificação');
+  }
+
+  function atualizar() {
+    try {
+      fetch('/api/status', { cache: 'no-store', headers: { Accept: 'application/json' } })
+        .then(function (r) { if (!r.ok) throw new Error('http_' + r.status); return r.json(); })
+        .then(function (d) {
+          if (!d || d.ok === false) throw new Error('status_indisponivel');
+          aplicar(d);
+        })
+        .catch(function () { mostrarFalha(); });
+    } catch (e) {
+      mostrarFalha();
+    }
+  }
+
+  try { aplicar(INITIAL_STATUS); } catch (e) {}
+  atualizar();
+  setInterval(atualizar, REFRESH_MS);
+  setInterval(function () { texto('data-hora', formatarHoraBrasilia(null)); }, 1000);
+})();
+</script>
+</body>
+</html>`;
+}
+
+/** JSON público — nunca derruba o servidor: qualquer falha vira erro tratado. */
+app.get('/api/status', (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(montarStatusPublico());
+  } catch (e) {
+    try {
+      res.status(500).json({ ok: false, error: 'status_indisponivel' });
+    } catch (_) {}
+  }
+});
+
+/** Página pública de status (HTML único, sem arquivo estático e sem CDN). */
+app.get('/status', (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(renderStatusPage());
+  } catch (e) {
+    try {
+      res.status(500).type('html').send('<!doctype html><meta charset="utf-8"><p>Status temporariamente indisponível.</p>');
+    } catch (_) {}
+  }
+});
+
 app.get('/api/creators', (_req, res) => {
   try {
     const m = readManifest();
