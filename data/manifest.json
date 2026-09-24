@@ -1,76 +1,92 @@
 {
- "version": 1,
- "updatedAt": "2026-09-21T23:18:59.000Z",
- "launcher": {
-  "latestVersion": "1.6.33",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.33/Reality.Client.Launcher.Setup.1.6.33.exe",
-  "notes": "1.6.24 — capas da Copa arrumadas de verdade (mesmo formato das outras capas; a textura estava no layout errado).",
-  "sha256": "91186a3972eb8c5d8c0e2283461b9de6128e41541320fa0311f490d7a5842450",
-  "size": 134316373,
-  "mandatory": false,
-  "platforms": {}
- },
- "terms": {
-  "version": "1.0.0",
-  "title": "Termos de Uso e Licença do Reality Client",
-  "effectiveAt": "2026-08-18"
- },
- "discord": {
-  "reality": "https://discord.gg/JJHScuCf8y",
-  "kowa": "https://discord.gg/6jRn5jKCnd"
- },
- "features": {
-  "autoCapeMod": true,
-  "hideCoreMods": true,
-  "offlineSkins": true
- },
- "announcement": {
-  "enabled": true,
-  "title": "Reality Client — Lançamento",
-  "message": "Bem-vindo ao Reality Client! Entre no Discord para novidades, códigos e suporte.",
-  "url": "https://discord.gg/JJHScuCf8y"
- },
- "creators": [],
- "topDonors": [],
- "codes": {
-  "RELEASE": {
-   "visual": "reality-galaxy",
-   "badge": "Membro do Reality",
-   "cape": "reality_bolt.png",
-   "role": "Membro do Reality",
-   "usesLeft": null
+  "version": 1,
+  "updatedAt": "2026-09-21T23:18:59.000Z",
+  "launcher": {
+    "latestVersion": "1.6.33",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.33/Reality.Client.Launcher.Setup.1.6.33.exe",
+    "notes": "1.6.24 — capas da Copa arrumadas de verdade (mesmo formato das outras capas; a textura estava no layout errado).",
+    "sha256": "91186a3972eb8c5d8c0e2283461b9de6128e41541320fa0311f490d7a5842450",
+    "size": 134316373,
+    "mandatory": false,
+    "platforms": {}
   },
-  "RLTY-3247-3287-MUNDOMC": {
-   "visual": null,
-   "badge": "Parceiro MundoMC",
-   "cape": "capa_mundomc.png",
-   "role": "Parceiro MundoMC",
-   "usesLeft": 1,
-   "redeemedBy": []
+  "terms": {
+    "version": "1.0.0",
+    "title": "Termos de Uso e Licença do Reality Client",
+    "effectiveAt": "2026-08-18"
   },
-  "RLTY-3247-3287-OWNER": {
-   "visual": null,
-   "badge": "Dono do Reality",
-   "cape": null,
-   "role": "Dono do Reality Client",
-   "usesLeft": 7,
-   "redeemedBy": []
+  "discord": {
+    "reality": "https://discord.gg/JJHScuCf8y",
+    "kowa": "https://discord.gg/6jRn5jKCnd"
   },
-  "RLTY-3247-3287-CREATOR": {
-   "visual": null,
-   "badge": "Criador de Conteúdo",
-   "cape": "capa_creator_reality.png",
-   "role": "Criador de Conteúdo da Reality",
-   "usesLeft": 1,
-   "redeemedBy": []
+  "features": {
+    "autoCapeMod": true,
+    "hideCoreMods": true,
+    "offlineSkins": true
   },
-  "KOWA": {
-   "visual": null,
-   "badge": "ඞ Kowa KowaMC",
-   "cape": null,
-   "role": "Kowa KowaMC",
-   "usesLeft": 1,
-   "redeemedBy": []
+  "announcement": {
+    "enabled": true,
+    "title": "Reality Client — Lançamento",
+    "message": "Bem-vindo ao Reality Client! Entre no Discord para novidades, códigos e suporte.",
+    "url": "https://discord.gg/JJHScuCf8y"
+  },
+  "creators": [],
+  "topDonors": [],
+  "codes": {
+    "RELEASE": {
+      "visual": "reality-galaxy",
+      "badge": "Membro do Reality",
+      "cape": "reality_bolt.png",
+      "role": "Membro do Reality",
+      "usesLeft": null
+    },
+    "RLTY-3247-3287-MUNDOMC": {
+      "visual": null,
+      "badge": "Parceiro MundoMC",
+      "cape": "capa_mundomc.png",
+      "role": "Parceiro MundoMC",
+      "usesLeft": 1,
+      "redeemedBy": []
+    },
+    "RLTY-3247-3287-OWNER": {
+      "visual": null,
+      "badge": "Dono do Reality",
+      "cape": null,
+      "role": "Dono do Reality Client",
+      "usesLeft": 7,
+      "redeemedBy": []
+    },
+    "RLTY-3247-3287-CREATOR": {
+      "visual": null,
+      "badge": "Criador de Conteúdo",
+      "cape": "capa_creator_reality.png",
+      "role": "Criador de Conteúdo da Reality",
+      "usesLeft": 1,
+      "redeemedBy": []
+    },
+    "KOWA": {
+      "visual": null,
+      "badge": "ඞ Kowa KowaMC",
+      "cape": null,
+      "role": "Kowa KowaMC",
+      "usesLeft": 1,
+      "redeemedBy": []
+    },
+    "RLTY-5K-3DAA": {
+      "reward": {
+        "coins": 5000
+      },
+      "usesLeft": 1,
+      "redeemedBy": [],
+      "createdAt": "2026-09-24T16:53:03Z"
+    },
+    "RLTY-5K-TESTE085D": {
+      "reward": {
+        "coins": 5000
+      },
+      "usesLeft": 1,
+      "redeemedBy": [],
+      "createdAt": "2026-09-24T16:53:03Z"
+    }
   }
- }
 }
