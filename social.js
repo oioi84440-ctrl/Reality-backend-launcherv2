@@ -107,6 +107,20 @@ function createSocial(dataDir) {
   /** Login/registro automático pelo nick do launcher. */
   function loginOrRegister({ username, displayName, token }) {
     ensure();
+    // SEGURANCA/UX: se veio um token valido, a conta E a dona do token - o nick informado
+    // (que pode ser de outra conta ativa no launcher) e ignorado. Quem tem o token entra.
+    const present = String(token || '');
+    if (present) {
+      const dono = findUserByToken(present);
+      if (dono) {
+        dono.lastSeen = Date.now();
+        dono.status = 'online';
+        dono.placeholder = false;
+        if (displayName) dono.displayName = String(displayName).trim().slice(0, 24);
+        saveUser(dono);
+        return { token: dono.token, user: publicUser(dono) };
+      }
+    }
     if (!validUsername(username)) {
       const err = new Error('invalid_username');
       err.status = 400;
