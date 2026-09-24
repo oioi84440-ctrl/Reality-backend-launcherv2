@@ -448,15 +448,31 @@ function createSocial(dataDir) {
       throw err;
     }
     ensure();
+    // SEGURANCA: busca minima de 3 e com orcamento por usuario (nao da para varrer a base de nicks).
     const q = normName(query);
-    if (q.length < 2) return { users: [] };
+    if (q.length < 3) return { users: [] };
+    if (!searchBudget(me.id, 20, 60_000)) {
+      const err = new Error('rate_limited');
+      err.status = 429;
+      throw err;
+    }
     const users = readJson(USERS_FILE, {});
     const now = Date.now();
     const hits = Object.values(users)
       .filter((u) => u.id !== me.id && normName(u.username).includes(q))
-      .slice(0, 20)
+      .slice(0, 8)
       .map((u) => publicUser(u, now));
     return { users: hits };
+  }
+
+  // Orcamento simples por usuario (usado na busca de nicks).
+  const searchHits = new Map();
+  function searchBudget(userId, max, windowMs) {
+    const now = Date.now();
+    const hist = (searchHits.get(userId) || []).filter((t) => now - t < windowMs);
+    hist.push(now);
+    searchHits.set(userId, hist);
+    return hist.length <= max;
   }
 
   function mount(app) {
@@ -464,7 +480,8 @@ function createSocial(dataDir) {
 
     function auth(req, res, next) {
       const header = req.headers.authorization || '';
-      const token = header.startsWith('Bearer ') ? header.slice(7) : req.body?.token || req.query?.token;
+      // SEGURANCA: token so via header Authorization (query string vaza em logs/proxy).
+      const token = header.startsWith('Bearer ') ? header.slice(7) : req.body?.token;
       const user = findUserByToken(token);
       if (!user) return res.status(401).json({ error: 'unauthorized' });
       req.socialUser = user;
