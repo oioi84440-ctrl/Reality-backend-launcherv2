@@ -105,7 +105,7 @@ function createSocial(dataDir) {
   }
 
   /** Login/registro automático pelo nick do launcher. */
-  function loginOrRegister({ username, displayName }) {
+  function loginOrRegister({ username, displayName, token }) {
     ensure();
     if (!validUsername(username)) {
       const err = new Error('invalid_username');
@@ -125,7 +125,15 @@ function createSocial(dataDir) {
       };
       saveUser(user);
     } else {
-      user.token = newToken();
+      // SEGURANCA: nick que ja existe so entra com o token da propria conta.
+      // Sem isso, qualquer um que digitasse o nick de outra pessoa recebia um token novo
+      // e via o chat/amigos dela (conta offline nao tem senha).
+      const presented = String(token || '');
+      if (!presented || presented !== user.token) {
+        const err = new Error('nick_in_use');
+        err.status = 403;
+        throw err;
+      }
       user.lastSeen = Date.now();
       user.status = 'online';
       user.placeholder = false;
@@ -461,7 +469,8 @@ function createSocial(dataDir) {
       try {
         const result = loginOrRegister({
           username: req.body?.username,
-          displayName: req.body?.displayName
+          displayName: req.body?.displayName,
+          token: req.body?.token || (req.headers.authorization || '').replace(/^Bearer /i, '')
         });
         res.json(result);
       } catch (e) {
