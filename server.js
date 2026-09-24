@@ -802,6 +802,8 @@ app.post('/api/redeem', async (req, res) => {
           cape: /^[a-z0-9_-]+\.png$/i.test(String(source.cape || '')) ? source.cape : null,
           role: String(source.role || '').replace(/[^\p{L}\p{N} .-]/gu, '').slice(0, 60) || null,
           displayName: String(source.displayName || '').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || null,
+          // Recompensa de moedas (opcional). Quem aplica e o launcher; limite defensivo aqui.
+          coins: Math.max(0, Math.min(100000, Math.floor(Number(source.coins) || 0))),
           username: username || null,
           redeemedAt: Date.now()
         }
