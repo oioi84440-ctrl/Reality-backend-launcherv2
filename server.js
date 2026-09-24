@@ -339,6 +339,7 @@ app.post('/api/redeem', async (req, res) => {
     if (isRateLimited(req)) return res.status(429).json({ error: 'too_many_attempts' });
     const code = String(req.body?.code || '').trim().toUpperCase().slice(0, 64);
     const username = String(req.body?.username || '').trim().slice(0, 40);
+  const socialToken = String((req.headers.authorization || '').replace(/^Bearer /i, '') || '').slice(0, 80);
     if (!code) return res.status(400).json({ error: 'missing_code' });
 
     const result = await withRedeemLock(async () => {
@@ -354,7 +355,15 @@ app.post('/api/redeem', async (req, res) => {
 
       // Um jogador não pode resgatar o mesmo código duas vezes, mesmo quando
       // o código tem usos ilimitados. Só aplicamos a regra se houver nome.
-      const redeemer = username ? hashRedeemer(username) : null;
+      // SEGURANCA: com token social o resgate fica amarrado a CONTA (trocar o nick nao libera de novo).
+  let contaId = null;
+  try {
+    if (socialToken && social && typeof social.findUserByToken === 'function') {
+      const u = social.findUserByToken(socialToken);
+      if (u && u.id) contaId = 'acct:' + u.id;
+    }
+  } catch (_) {}
+  const redeemer = contaId || (username ? hashRedeemer(username) : null);
       const redeemedBy = Array.isArray(entry.redeemedBy) ? entry.redeemedBy : [];
       if (redeemer && redeemedBy.includes(redeemer)) {
         return { status: 409, body: { error: 'code_already_redeemed' } };
