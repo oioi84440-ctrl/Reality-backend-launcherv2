@@ -932,6 +932,130 @@ app.get('/api/guard/reports', (req, res) => {
 });
 
 
+// ---------- Top Tempo (ranking global de tempo de uso) — aditivo ----------
+// Endpoints NOVOS (nenhuma rota existente foi alterada):
+//   POST /api/ranking/time  { uuid, name, ms }  -> acumula o tempo do jogador
+//   GET  /api/ranking/time?limit=20             -> ranking (pos, name, ms)
+// Dados: <data>/ranking-time.json = { "<uuid>": { name, ms, updatedAt } }
+// O launcher reporta INCREMENTOS (a cada ~5 min e na saída); o total por jogador
+// é o acumulado. Arquivo ausente/corrompido => recomeça vazio. Nunca derruba o servidor.
+const RANKING_TIME_FILE = path.join(DATA_DIR, 'ranking-time.json');
+const RANKING_TIME_MAX_REPORT_MS = 24 * 60 * 60 * 1000; // limite por reporte (não inflar)
+const RANKING_TIME_WINDOW_MS = 60 * 1000;               // 1 reporte por IP a cada ~60s
+const RANKING_TIME_MAX_ENTRIES = 5000;                  // teto defensivo do arquivo
+let rankingTimeQueue = Promise.resolve();
+
+function withRankingTimeLock(task) {
+  const result = rankingTimeQueue.then(task, task);
+  rankingTimeQueue = result.catch(() => {});
+  return result;
+}
+
+function readRankingTime() {
+  try {
+    if (!fs.existsSync(RANKING_TIME_FILE)) return {};
+    const bruto = JSON.parse(fs.readFileSync(RANKING_TIME_FILE, 'utf-8'));
+    if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return {};
+    const limpo = {};
+    for (const [uuid, info] of Object.entries(bruto)) {
+      try {
+        if (!info || typeof info !== 'object') continue;
+        // Chave e nome no MESMO formato que o POST aceita: entrada fora do
+        // padrão (arquivo editado na mão / corrompido) é descartada.
+        if (!/^[0-9a-fA-F-]{32,36}$/.test(String(uuid))) continue;
+        const ms = Math.floor(Number(info.ms));
+        if (!Number.isFinite(ms) || ms <= 0) continue;
+        const name = String(info.name || '').trim();
+        if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) continue;
+        limpo[String(uuid)] = {
+          name,
+          ms,
+          updatedAt: Math.max(0, Math.floor(Number(info.updatedAt) || 0))
+        };
+      } catch (_) { /* entrada inválida: ignora */ }
+    }
+    return limpo;
+  } catch (_) {
+    return {}; // arquivo ausente/corrompido => recomeça vazio
+  }
+}
+
+function writeRankingTime(dados) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tempFile = `${RANKING_TIME_FILE}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(dados, null, 2), 'utf-8');
+    fs.renameSync(tempFile, RANKING_TIME_FILE); // troca atômica (igual ao manifesto)
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+app.post('/api/ranking/time', (req, res) => {
+  try {
+    const body = req.body || {};
+    const uuid = String(body.uuid || '').trim();
+    const name = String(body.name || '').trim();
+    const ms = Number(body.ms);
+    if (!/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
+      return res.status(400).json({ ok: false, error: 'invalid_uuid' });
+    }
+    if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) {
+      return res.status(400).json({ ok: false, error: 'invalid_name' });
+    }
+    if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms <= 0 || ms > RANKING_TIME_MAX_REPORT_MS) {
+      return res.status(400).json({ ok: false, error: 'invalid_ms' });
+    }
+    // SEGURANCA: rate limit por IP REAL (clientKey — X-Forwarded-For é forjável):
+    // no máximo 1 reporte a cada ~60s por IP.
+    if (!rateLimit(clientKey(req), 'ranking-time', 1, RANKING_TIME_WINDOW_MS)) {
+      return res.status(429).json({ ok: false, error: 'too_many_reports' });
+    }
+    const key = normalizeUuid(uuid);
+    withRankingTimeLock(() => {
+      const dados = readRankingTime();
+      const prev = dados[key] || { name: '', ms: 0 };
+      let total = Math.floor(Number(prev.ms) || 0) + ms;
+      if (!Number.isFinite(total) || total < 0) total = ms;
+      dados[key] = { name, ms: total, updatedAt: Date.now() };
+      const chaves = Object.keys(dados);
+      if (chaves.length > RANKING_TIME_MAX_ENTRIES) {
+        // Teto defensivo: mantém só os maiores tempos.
+        const maiores = chaves.sort((a, b) => dados[b].ms - dados[a].ms).slice(0, RANKING_TIME_MAX_ENTRIES);
+        const reduzido = {};
+        for (const k of maiores) reduzido[k] = dados[k];
+        writeRankingTime(reduzido);
+      } else {
+        writeRankingTime(dados);
+      }
+      return total;
+    }).then((total) => {
+      try { res.json({ ok: true, ms: total }); } catch (_) {}
+    }).catch(() => {
+      try { res.status(500).json({ ok: false, error: 'ranking_save_failed' }); } catch (_) {}
+    });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'ranking_report_failed' }); } catch (_) {}
+  }
+});
+
+app.get('/api/ranking/time', (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const pedido = parseInt(req.query.limit, 10);
+    const limit = Math.min(50, Math.max(1, Number.isFinite(pedido) ? pedido : 20));
+    const dados = readRankingTime();
+    const lista = Object.entries(dados)
+      .map(([uuid, info]) => ({ name: info.name, ms: info.ms, updatedAt: info.updatedAt || 0 }))
+      .sort((a, b) => (b.ms - a.ms) || (a.updatedAt - b.updatedAt) || String(a.name).localeCompare(String(b.name)));
+    const top = lista.slice(0, limit).map((item, i) => ({ name: item.name, ms: item.ms, pos: i + 1 }));
+    res.json({ ok: true, top, total: lista.length });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'ranking_read_failed', top: [], total: 0 }); } catch (_) {}
+  }
+});
+
 app.listen(PORT, () => {
   ensureData();
   social.ensure();
