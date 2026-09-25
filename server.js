@@ -1049,7 +1049,7 @@ app.get('/api/ranking/time', (req, res) => {
     const lista = Object.entries(dados)
       .map(([uuid, info]) => ({ name: info.name, ms: info.ms, updatedAt: info.updatedAt || 0 }))
       .sort((a, b) => (b.ms - a.ms) || (a.updatedAt - b.updatedAt) || String(a.name).localeCompare(String(b.name)));
-    const top = lista.slice(0, limit).map((item, i) => ({ name: item.name, ms: item.ms, pos: i + 1 }));
+    const top = lista.slice(0, limit).map((item, i) => ({ name: item.name, ms: item.ms, updatedAt: item.updatedAt || 0, pos: i + 1 }));
     res.json({ ok: true, top, total: lista.length });
   } catch (e) {
     try { res.status(500).json({ ok: false, error: 'ranking_read_failed', top: [], total: 0 }); } catch (_) {}
