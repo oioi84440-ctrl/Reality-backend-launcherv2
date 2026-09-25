@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.48",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.48/Reality.Client.Launcher.Setup.1.6.48.exe",
+  "latestVersion": "1.6.49",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.49/Reality.Client.Launcher.Setup.1.6.49.exe",
   "notes": "1.6.44 — TOP TEMPO igual para todo mundo: cada launcher manda o total de uso, o servidor guarda o maior valor (com limite anti-trapaca) e todas as telas mostram os mesmos numeros, contando ao vivo. Nada se perde se o servidor cair.",
-  "sha256": "da539e0e06e281e69e4e8ed2cc0c1da154f27a1521271b289293dd7177f13519",
-  "size": 134481291,
+  "sha256": "48f78cc5c2323ffb29c0ebe111ee89b6b4483f764a358f910e389465c626e56e",
+  "size": 134490325,
   "mandatory": false,
   "platforms": {}
  },
