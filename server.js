@@ -934,13 +934,19 @@ app.get('/api/guard/reports', (req, res) => {
 
 // ---------- Top Tempo (ranking global de tempo de uso) — aditivo ----------
 // Endpoints NOVOS (nenhuma rota existente foi alterada):
-//   POST /api/ranking/time  { uuid, name, ms }  -> acumula o tempo do jogador
-//   GET  /api/ranking/time?limit=20             -> ranking (pos, name, ms)
+//   POST /api/ranking/time  { uuid, name, ms }  -> TOTAL acumulado do jogador
+//   GET  /api/ranking/time?limit=20             -> ranking (pos, name, ms, updatedAt)
 // Dados: <data>/ranking-time.json = { "<uuid>": { name, ms, updatedAt } }
-// O launcher reporta INCREMENTOS (a cada ~5 min e na saída); o total por jogador
-// é o acumulado. Arquivo ausente/corrompido => recomeça vazio. Nunca derruba o servidor.
+// O launcher reporta o TOTAL de tempo de launcher aberto (NÃO incrementos): a cada
+// ~90s, logo após o boot e na saída. O valor guardado é max(anterior, ms) — um
+// reporte perdido (offline/429/troca de conta) nunca mais atrasa o placar, o
+// próximo reporte reenvia o total. Trava anti-inflação: um reporte sobe no máximo
+// 24h acima do valor anterior e o valor NUNCA diminui; updatedAt = agora a cada
+// reporte aceito (mantém a lista "viva" para todos os clientes). Arquivo
+// ausente/corrompido => recomeça vazio. Nunca derruba o servidor.
 const RANKING_TIME_FILE = path.join(DATA_DIR, 'ranking-time.json');
-const RANKING_TIME_MAX_REPORT_MS = 24 * 60 * 60 * 1000; // limite por reporte (não inflar)
+const RANKING_TIME_MAX_GROWTH_MS = 24 * 60 * 60 * 1000; // teto de crescimento por reporte
+const RANKING_TIME_MAX_TOTAL_MS = 100 * 365 * 24 * 60 * 60 * 1000; // sanidade do payload (100 anos)
 const RANKING_TIME_WINDOW_MS = 60 * 1000;               // 1 reporte por IP a cada ~60s
 const RANKING_TIME_MAX_ENTRIES = 5000;                  // teto defensivo do arquivo
 let rankingTimeQueue = Promise.resolve();
@@ -1004,7 +1010,10 @@ app.post('/api/ranking/time', (req, res) => {
     if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) {
       return res.status(400).json({ ok: false, error: 'invalid_name' });
     }
-    if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms <= 0 || ms > RANKING_TIME_MAX_REPORT_MS) {
+    // ms = TOTAL acumulado (pode passar de 24h: é o tempo de uso do jogador).
+    // Aqui só um teto de sanidade do payload — a trava anti-inflação é aplicada
+    // abaixo, contra o valor já guardado.
+    if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms <= 0 || ms > RANKING_TIME_MAX_TOTAL_MS) {
       return res.status(400).json({ ok: false, error: 'invalid_ms' });
     }
     // SEGURANCA: rate limit por IP REAL (clientKey — X-Forwarded-For é forjável):
@@ -1016,8 +1025,13 @@ app.post('/api/ranking/time', (req, res) => {
     withRankingTimeLock(() => {
       const dados = readRankingTime();
       const prev = dados[key] || { name: '', ms: 0 };
-      let total = Math.floor(Number(prev.ms) || 0) + ms;
-      if (!Number.isFinite(total) || total < 0) total = ms;
+      const anterior = Math.max(0, Math.floor(Number(prev.ms) || 0));
+      // TOTAL ACUMULADO: guarda o MAIOR valor. Nunca soma (um incremento perdido
+      // não atrasa mais o placar) e nunca diminui (reporte atrasado/menor é
+      // ignorado no valor, mas renova o updatedAt).
+      let total = Math.max(anterior, Math.floor(ms));
+      // Trava anti-inflação: um único reporte não sobe mais de 24h acima do anterior.
+      if (total > anterior + RANKING_TIME_MAX_GROWTH_MS) total = anterior + RANKING_TIME_MAX_GROWTH_MS;
       dados[key] = { name, ms: total, updatedAt: Date.now() };
       const chaves = Object.keys(dados);
       if (chaves.length > RANKING_TIME_MAX_ENTRIES) {
