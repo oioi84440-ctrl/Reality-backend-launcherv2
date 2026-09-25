@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.43",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.43/Reality.Client.Launcher.Setup.1.6.43.exe",
-  "notes": "1.6.24 — capas da Copa arrumadas de verdade (mesmo formato das outras capas; a textura estava no layout errado).",
-  "sha256": "33060d49b8b06293ec1601fda658a7f1e7d17f31012ecf509b47818b55568e1c",
-  "size": 134467878,
+  "latestVersion": "1.6.44",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.44/Reality.Client.Launcher.Setup.1.6.44.exe",
+  "notes": "1.6.44 — TOP TEMPO igual para todo mundo: cada launcher manda o total de uso, o servidor guarda o maior valor (com limite anti-trapaca) e todas as telas mostram os mesmos numeros, contando ao vivo. Nada se perde se o servidor cair.",
+  "sha256": "2c2c67f654c2cd5f1026fc3ef962b006b267a93a3ce77df56755860c1f42d65a",
+  "size": 134468247,
   "mandatory": false,
   "platforms": {}
  },
