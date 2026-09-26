@@ -180,6 +180,169 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ---------- Lista negra (bans) — genérica, editável sem deploy ----------
+// Fonte: <data>/bans.json = { version, updatedAt, bans: [ { username?, uuid?, reason?, at? } ] }
+//   - username casa a conta (offline OU social) pelo NICK, sem diferenciar maiúsculas;
+//   - uuid casa a conta offline pelo UUID canônico (com ou sem hífens);
+//   - reason é o motivo mostrado ao jogador e no webhook do Guard.
+// Público: GET /api/bans entrega SÓ a lista (nick/uuid/motivo) — o launcher usa
+// pra bloquear o launch e mostrar o aviso. Nada sensível mora aqui.
+// Admin (requireAdmin):  POST /api/admin/bans { username?, uuid?, reason? } adiciona/atualiza;
+//                        DELETE /api/admin/bans { username?|uuid? } (ou ?username=) remove.
+// Arquivo ausente/inválido nunca derruba o servidor: semeia com a lista padrão.
+const BANS_FILE = path.join(DATA_DIR, 'bans.json');
+const BANS_CACHE_MS = 10 * 1000;
+const BANS_MAX_ENTRIES = 5000;
+const BANS_DEFAULT = [
+  { username: 'halseixit2', uuid: '834c3dc0-d82e-340f-8270-169edfcbab1c', reason: 'fraude de moedas (coins editado no config.json) + historico de cheats' },
+  { username: 'nuli', reason: 'fraude de moedas / uso de cheats (conta do Discord: nuli)' }
+];
+let bansCache = { at: 0, data: null };
+
+function bansSanitizeEntry(bruto) {
+  if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return null;
+  const username = String(bruto.username || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 32);
+  const uuidBruto = String(bruto.uuid || '').trim().slice(0, 64);
+  const reason = String(bruto.reason || 'banido').replace(/[\r\n\t]/g, ' ').trim().slice(0, 200) || 'banido';
+  const at = Math.max(0, Math.floor(Number(bruto.at) || Date.now()));
+  if (!username && !uuidBruto) return null;
+  return {
+    username,
+    uuid: /^[0-9a-fA-F-]{32,36}$/.test(uuidBruto) ? normalizeUuid(uuidBruto) : '',
+    reason,
+    at
+  };
+}
+
+function bansDefaultFile() {
+  const agora = Date.now();
+  return {
+    version: 1,
+    updatedAt: new Date(agora).toISOString(),
+    bans: BANS_DEFAULT.map((b) => bansSanitizeEntry({ ...b, at: agora })).filter(Boolean)
+  };
+}
+
+function writeBansFile(dados) {
+  ensureData();
+  const tempFile = `${BANS_FILE}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(dados, null, 2), 'utf-8');
+  fs.renameSync(tempFile, BANS_FILE); // troca atômica (igual ao manifesto)
+  bansCache = { at: Date.now(), data: dados };
+  return dados;
+}
+
+function readBans(force) {
+  const agora = Date.now();
+  if (!force && bansCache.data && agora - bansCache.at < BANS_CACHE_MS) return bansCache.data;
+  let bruto = null;
+  try {
+    if (fs.existsSync(BANS_FILE)) bruto = JSON.parse(fs.readFileSync(BANS_FILE, 'utf-8'));
+  } catch (_) {
+    bruto = null; // arquivo corrompido => recomeça da lista padrão
+  }
+  let dados;
+  if (bruto && typeof bruto === 'object' && Array.isArray(bruto.bans)) {
+    dados = {
+      version: Math.max(1, Math.floor(Number(bruto.version) || 1)),
+      updatedAt: typeof bruto.updatedAt === 'string' ? bruto.updatedAt.slice(0, 40) : new Date().toISOString(),
+      bans: bruto.bans.map(bansSanitizeEntry).filter(Boolean).slice(0, BANS_MAX_ENTRIES)
+    };
+  } else {
+    // Primeiro boot (ou arquivo inválido): grava a lista padrão — o bloqueio vale
+    // desde o primeiro start e o dono só edita o data/bans.json depois.
+    dados = bansDefaultFile();
+    try { writeBansFile(dados); } catch (_) { /* não deixa o boot quebrar por isso */ }
+  }
+  bansCache = { at: agora, data: dados };
+  return dados;
+}
+
+function bansUuidEq(a, b) {
+  const na = normalizeUuid(a).replace(/-/g, '').toLowerCase();
+  const nb = normalizeUuid(b).replace(/-/g, '').toLowerCase();
+  return na.length === 32 && nb.length === 32 && na === nb;
+}
+
+/** Casa uma identidade ({ username?, uuid?, key? }) contra a lista negra. */
+function banMatch(alvo) {
+  try {
+    const nick = String((alvo && alvo.username) || '').trim().toLowerCase();
+    const id = String((alvo && alvo.uuid) || '').trim();
+    const chave = String((alvo && alvo.key) || '').trim().toLowerCase();
+    for (const b of readBans().bans) {
+      if (b.username && nick && b.username.toLowerCase() === nick) return Object.assign({}, b, { matched: 'username' });
+      if (b.uuid && id && bansUuidEq(b.uuid, id)) return Object.assign({}, b, { matched: 'uuid' });
+      if (b.uuid && chave && chave === 'offline:' + normalizeUuid(b.uuid).toLowerCase()) return Object.assign({}, b, { matched: 'uuid' });
+    }
+  } catch (_) { /* lista indisponível nunca libera nem derruba: sem match */ }
+  return null;
+}
+
+function banPublicEntry(b) {
+  return { username: (b && b.username) || '', uuid: (b && b.uuid) || '', reason: (b && b.reason) || 'banido', at: (b && b.at) || 0 };
+}
+
+function banBlockBody(ban) {
+  return {
+    ok: false,
+    error: 'banned',
+    message: 'Voce foi banido - fraude/uso de cheats - fale no Discord.',
+    ban: banPublicEntry(ban)
+  };
+}
+
+/** Identidade a partir do coinsIdentity/social (name + key offline:/social:). */
+function banIdentityFromCoins(ident) {
+  if (!ident) return null;
+  const key = String(ident.key || '');
+  return {
+    username: ident.name || '',
+    uuid: ident.kind === 'offline' && key.startsWith('offline:') ? key.slice(8) : '',
+    key
+  };
+}
+
+/** Checa a lista negra pro request: identidade resolvida + username/uuid do corpo. */
+function banCheckRequest(req, ident) {
+  try {
+    const alvos = [];
+    const doIdent = banIdentityFromCoins(ident);
+    if (doIdent && (doIdent.username || doIdent.uuid)) alvos.push(doIdent);
+    const body = (req && req.body) || {};
+    const username = String(body.username || body.name || req.headers['x-reality-name'] || '').trim();
+    const uuid = String(body.uuid || req.headers['x-reality-uuid'] || '').trim();
+    if (username || uuid) {
+      alvos.push({ username, uuid, key: uuid ? 'offline:' + normalizeUuid(uuid).toLowerCase() : '' });
+    }
+    for (const alvo of alvos) {
+      const banido = banMatch(alvo);
+      if (banido) return banido;
+    }
+  } catch (_) {}
+  return null;
+}
+
+/** GET /api/bans — lista negra pública pro launcher (nick/uuid/motivo). */
+app.get('/api/bans', (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!rateLimit(clientKey(req), 'bans-get', 120, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_requests' });
+    }
+    const dados = readBans();
+    res.json({
+      ok: true,
+      version: dados.version,
+      updatedAt: dados.updatedAt,
+      count: dados.bans.length,
+      bans: dados.bans.map(banPublicEntry)
+    });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'bans_read_failed' }); } catch (_2) {}
+  }
+});
+
 // ---------- Público ----------
 
 app.get('/', (_req, res) => {
@@ -191,6 +354,7 @@ app.get('/', (_req, res) => {
     '<li><a style="color:#7dd3fc" href="/health">/health</a></li>' +
     '<li><a style="color:#7dd3fc" href="/api/manifest">/api/manifest</a></li>' +
     '<li><a style="color:#7dd3fc" href="/api/update">/api/update</a></li>' +
+    '<li><a style="color:#7dd3fc" href="/api/bans">/api/bans</a></li>' +
     '</ul></body></html>'
   );
 });
@@ -754,6 +918,9 @@ app.post('/api/redeem', async (req, res) => {
     // Identidade da conta (token social ou conta offline/uuid) — usada para creditar
     // a recompensa de moedas do código AQUI no servidor, nunca no config do jogador.
     const coinsIdentRedeem = coinsIdentity(req);
+    // Lista negra: conta banida não resgata código (nem moeda, nem recompensa).
+    const banRedeem = banCheckRequest(req, coinsIdentRedeem);
+    if (banRedeem) return res.status(403).json(banBlockBody(banRedeem));
 
     const result = await withRedeemLock(async () => {
       const m = readManifest();
@@ -898,9 +1065,96 @@ app.post('/api/admin/launcher', requireAdmin, (req, res) => {
   }
 });
 
+// ---------- Admin: lista negra (bans) ----------
+// Adiciona/atualiza (POST) e remove (DELETE) nicks/uuids SEM deploy: o launcher
+// pega a lista nova em GET /api/bans (cache curto) e bloqueia o launch.
+app.get('/api/admin/bans', requireAdmin, (_req, res) => {
+  try {
+    const dados = readBans(true);
+    res.json({ ok: true, version: dados.version, updatedAt: dados.updatedAt, count: dados.bans.length, bans: dados.bans.map(banPublicEntry) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'bans_read_failed' }); } catch (_2) {}
+  }
+});
+
+app.post('/api/admin/bans', requireAdmin, (req, res) => {
+  try {
+    const body = req.body || {};
+    const entradas = Array.isArray(body.bans) ? body.bans : [body];
+    const dados = readBans(true);
+    const lista = dados.bans.slice();
+    let adicionados = 0;
+    let atualizados = 0;
+    for (const bruto of entradas.slice(0, 500)) {
+      const limpo = bansSanitizeEntry(bruto);
+      if (!limpo) continue;
+      const i = lista.findIndex((b) => (
+        (limpo.username && b.username && b.username.toLowerCase() === limpo.username.toLowerCase()) ||
+        (limpo.uuid && b.uuid && bansUuidEq(b.uuid, limpo.uuid))
+      ));
+      if (i >= 0) {
+        lista[i] = { ...lista[i], ...limpo };
+        atualizados += 1;
+      } else {
+        lista.push(limpo);
+        adicionados += 1;
+      }
+    }
+    const proximo = writeBansFile({
+      version: Math.max(1, Math.floor(Number(dados.version) || 1)) + 1,
+      updatedAt: new Date().toISOString(),
+      bans: lista.slice(0, BANS_MAX_ENTRIES)
+    });
+    res.json({ ok: true, added: adicionados, updated: atualizados, count: proximo.bans.length, bans: proximo.bans.map(banPublicEntry) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'bans_save_failed' }); } catch (_2) {}
+  }
+});
+
+app.delete('/api/admin/bans', requireAdmin, (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username || req.query.username || '').trim().toLowerCase();
+    const uuid = String(body.uuid || req.query.uuid || '').trim();
+    if (!username && !uuid) return res.status(400).json({ ok: false, error: 'missing_username_or_uuid' });
+    const dados = readBans(true);
+    const antes = dados.bans.length;
+    const lista = dados.bans.filter((b) => {
+      if (username && b.username && b.username.toLowerCase() === username) return false;
+      if (uuid && b.uuid && bansUuidEq(b.uuid, uuid)) return false;
+      return true;
+    });
+    const proximo = writeBansFile({
+      version: Math.max(1, Math.floor(Number(dados.version) || 1)) + 1,
+      updatedAt: new Date().toISOString(),
+      bans: lista
+    });
+    res.json({ ok: true, removed: antes - proximo.bans.length, count: proximo.bans.length, bans: proximo.bans.map(banPublicEntry) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'bans_delete_failed' }); } catch (_2) {}
+  }
+});
+
 // ---------- Social (amigos, pedidos, chat, presença) ----------
 const { createSocial } = require('./social');
 const social = createSocial(DATA_DIR);
+// Lista negra: conta banida não abre sessão social (nem derruba as rotas dos
+// outros). O launcher também bloqueia o próprio launch dessa conta.
+app.use('/api/social', (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const apresentado = String(body.token || '') || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    let alvo = { username: body.username || body.name || '', uuid: body.uuid || '', key: '' };
+    if (apresentado) {
+      let dono = null;
+      try { dono = social.findUserByToken(apresentado); } catch (_) { dono = null; }
+      if (dono) alvo = { username: dono.username || '', uuid: dono.uuid || '', key: '' };
+    }
+    const banido = banMatch(alvo);
+    if (banido) return res.status(403).json(banBlockBody(banido));
+  } catch (_) {}
+  next();
+});
 social.mount(app);
 
 
@@ -911,24 +1165,199 @@ const GUARD_KEY_IS_DEFAULT = !GUARD_ADMIN_KEY;
 if (GUARD_KEY_IS_DEFAULT) console.warn('[guard] GUARD_ADMIN_KEY nao definida - leitura de relatorios desabilitada');
 const MAX_GUARD_REPORTS = 500;
 
+// ---------- Webhook do Discord (Guard) ----------
+// Config: ENV GUARD_WEBHOOK_URL (preferida) com fallback opcional em
+// <data>/guard-webhook.json ({ "url": "https://discord.com/api/webhooks/..." }).
+// SEGURANCA: a URL NUNCA vai inteira para o log (só o host). Uma falha de webhook
+// NUNCA quebra o report: o envio é fire-and-forget, com timeout e try/catch.
+// Anti-spam/anti-loop: no máximo 1 mensagem por report, dedupe por
+// conta+motivo+hits (janela GUARD_WEBHOOK_DEDUPE_MS, padrão 60s) e teto de
+// GUARD_WEBHOOK_MAX_PER_MIN envios por minuto. Report repetido continua sendo
+// gravado (ok:true) — só não vira mensagem de novo.
+const GUARD_WEBHOOK_FILE = path.join(DATA_DIR, 'guard-webhook.json');
+const GUARD_WEBHOOK_TIMEOUT_MS = 8000;
+const GUARD_WEBHOOK_DEDUPE_MS = Math.max(5000, Math.floor(Number(process.env.GUARD_WEBHOOK_DEDUPE_MS) || 60000));
+const GUARD_WEBHOOK_MAX_PER_MIN = Math.max(1, Math.floor(Number(process.env.GUARD_WEBHOOK_MAX_PER_MIN) || 10));
+const GUARD_REPORT_MAX_PER_MIN = Math.max(1, Math.floor(Number(process.env.GUARD_REPORT_MAX_PER_MIN) || 30));
+let guardWebhookFileCache = { at: 0, url: '' };
+const guardWebhookDedupe = new Map(); // chave -> último envio (ms)
+let guardWebhookJanela = { start: 0, count: 0 };
+
+function guardWebhookUrl() {
+  const env = String(process.env.GUARD_WEBHOOK_URL || '').trim();
+  if (/^https?:\/\//i.test(env)) return env;
+  const agora = Date.now();
+  if (agora - guardWebhookFileCache.at > 60000) {
+    let url = '';
+    try {
+      if (fs.existsSync(GUARD_WEBHOOK_FILE)) {
+        const bruto = JSON.parse(fs.readFileSync(GUARD_WEBHOOK_FILE, 'utf-8'));
+        url = String((bruto && bruto.url) || '').trim();
+      }
+    } catch (_) { url = ''; }
+    guardWebhookFileCache = { at: agora, url: /^https?:\/\//i.test(url) ? url : '' };
+  }
+  return guardWebhookFileCache.url;
+}
+
+function guardWebhookHost(url) {
+  try { return new URL(url).host || '(host desconhecido)'; } catch (_) { return '(url invalida)'; }
+}
+
+/** Horário de Brasília (America/Sao_Paulo) — cai pro ISO se o runtime não tiver tz. */
+function guardBrasiliaTime(ms) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).format(new Date(ms || Date.now()));
+  } catch (_) {
+    try { return new Date(ms || Date.now()).toISOString(); } catch (_2) { return '(horario indisponivel)'; }
+  }
+}
+
+/** Converte os hits (JSON string ou objeto) em linhas legíveis pro embed. */
+function guardHitLines(itens, kindFiltro) {
+  const arr = Array.isArray(itens) ? itens : [];
+  const linhas = [];
+  for (const bruto of arr) {
+    let h = bruto;
+    if (typeof bruto === 'string') { try { h = JSON.parse(bruto); } catch (_) { h = null; } }
+    if (!h || typeof h !== 'object') continue;
+    const kind = String(h.kind || '');
+    if (kindFiltro === 'blocked' && kind !== 'blocked') continue;
+    if (kindFiltro === 'warning' && kind === 'blocked') continue;
+    const file = String(h.file || h.name || '?').replace(/[\r\n]+/g, ' ').slice(0, 100);
+    const reason = String(h.reason || 'sem detalhe').replace(/[\r\n]+/g, ' ').slice(0, 150);
+    linhas.push('• `' + file + '` — ' + reason);
+  }
+  return linhas;
+}
+
+function guardListaFormatada(linhas, limite) {
+  const corte = linhas.slice(0, limite);
+  if (linhas.length > limite) corte.push('… +' + (linhas.length - limite) + ' item(ns)');
+  return corte.join('\n').slice(0, 1000) || '—';
+}
+
+/** Monta a mensagem (embed) com nick, conta/uuid, motivo, bloqueios/avisos, versão e hora. */
+function guardWebhookPayload(report) {
+  const bloqueados = guardHitLines(report.hits, 'blocked');
+  const avisos = guardHitLines(report.hits, 'warning');
+  const conta = String(report.account || report.uuid || 'offline').slice(0, 80);
+  return {
+    username: 'Reality Guard',
+    embeds: [{
+      title: '🛡️ Reality Guard — ' + (bloqueados.length ? 'bloqueio detectado' : 'aviso'),
+      color: bloqueados.length ? 0xE74C3C : 0xF1C40F,
+      fields: [
+        { name: 'Jogador', value: '`' + (report.username || 'unknown') + '`', inline: true },
+        { name: 'Conta / UUID', value: '`' + conta + '`', inline: true },
+        { name: 'Motivo', value: String(report.reason || 'guard').slice(0, 200), inline: true },
+        { name: 'Bloqueado (' + bloqueados.length + ')', value: guardListaFormatada(bloqueados, 10), inline: false },
+        { name: 'Avisos (' + avisos.length + ')', value: guardListaFormatada(avisos, 10), inline: false },
+        { name: 'Launcher', value: '`' + String(report.launcherVersion || report.version || '?').slice(0, 40) + '`', inline: true },
+        { name: 'Horário (Brasília)', value: guardBrasiliaTime(report.at), inline: true }
+      ],
+      footer: { text: 'report ' + report.id }
+    }]
+  };
+}
+
+function guardWebhookPost(url, payload) {
+  return new Promise((resolve) => {
+    try {
+      const lib = /^https:/i.test(url) ? require('https') : require('http');
+      const u = new URL(url);
+      const corpo = Buffer.from(JSON.stringify(payload), 'utf-8');
+      const req = lib.request({
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || undefined,
+        path: u.pathname + u.search,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': corpo.length }
+      }, (resp) => {
+        try { resp.resume(); } catch (_) {}
+        resolve({ status: resp.statusCode || 0 });
+      });
+      req.setTimeout(GUARD_WEBHOOK_TIMEOUT_MS, () => { try { req.destroy(new Error('webhook_timeout')); } catch (_) {} });
+      req.on('error', () => resolve({ status: -1 }));
+      req.write(corpo);
+      req.end();
+    } catch (_) {
+      resolve({ status: -1 });
+    }
+  });
+}
+
+/**
+ * Decide (síncrono) se ESTE report vira mensagem e dispara UM envio
+ * (fire-and-forget). Retorna 'sent' | 'deduped' | 'throttled' | 'disabled'.
+ */
+function guardWebhookDispatch(report) {
+  let url = '';
+  try { url = guardWebhookUrl(); } catch (_) { url = ''; }
+  if (!url) return 'disabled';
+  let chave = report.id;
+  try {
+    chave = [
+      String(report.username || ''),
+      String(report.uuid || ''),
+      String(report.reason || ''),
+      require('crypto').createHash('sha1').update(JSON.stringify(report.hits || [])).digest('hex').slice(0, 12)
+    ].join('|');
+  } catch (_) { /* usa o id do report como chave */ }
+  const agora = Date.now();
+  const ultimo = guardWebhookDedupe.get(chave) || 0;
+  if (agora - ultimo < GUARD_WEBHOOK_DEDUPE_MS) return 'deduped';
+  if (agora - guardWebhookJanela.start > 60000) guardWebhookJanela = { start: agora, count: 0 };
+  if (guardWebhookJanela.count >= GUARD_WEBHOOK_MAX_PER_MIN) return 'throttled';
+  guardWebhookDedupe.set(chave, agora);
+  guardWebhookJanela.count += 1;
+  if (guardWebhookDedupe.size > 2000) {
+    for (const [k, t] of guardWebhookDedupe) {
+      if (agora - t > GUARD_WEBHOOK_DEDUPE_MS) guardWebhookDedupe.delete(k);
+    }
+  }
+  const host = guardWebhookHost(url); // log só com o host — nunca a URL inteira
+  const payload = guardWebhookPayload(report);
+  guardWebhookPost(url, payload).then((r) => {
+    if (r && r.status >= 200 && r.status < 300) console.log('[guard] webhook enviado (' + host + ') report ' + report.id);
+    else console.log('[guard] webhook falhou (' + host + ') status=' + (r && r.status) + ' report ' + report.id);
+  }).catch(() => {});
+  return 'sent';
+}
+
 app.post('/api/guard/report', (req, res) => {
   try {
+    // Limite por IP (clientKey — X-Forwarded-For é forjável) pro endpoint de report.
+    if (!rateLimit(clientKey(req), 'guard-report', GUARD_REPORT_MAX_PER_MIN, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_reports' });
+    }
     const body = req.body || {};
     const report = {
       id: 'g_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       at: Date.now(),
       username: String(body.username || body.name || 'unknown').replace(/[\r\n\t]/g, ' ').slice(0, 32),
       uuid: String(body.uuid || '').slice(0, 64),
+      account: String(body.account || '').replace(/[\r\n\t]/g, ' ').slice(0, 80),
       hits: (Array.isArray(body.hits) ? body.hits.slice(0, 40) : []).map((h) => {
         try { return JSON.stringify(h).slice(0, 400); } catch (_) { return 'invalid_hit'; }
       }),
       version: String(body.version || '').slice(0, 32),
+      launcherVersion: String(body.launcherVersion || '').slice(0, 32),
       reason: String(body.reason || 'guard').slice(0, 64)
     };
     guardReports.unshift(report);
     if (guardReports.length > MAX_GUARD_REPORTS) guardReports.length = MAX_GUARD_REPORTS;
     console.log('[guard]', report.username, report.hits.length, 'hit(s)');
-    res.json({ ok: true, id: report.id });
+    // Webhook: no máximo UMA mensagem por report (dedupe/teto anti-loop), sempre
+    // fire-and-forget — qualquer falha aqui NUNCA muda a resposta do report.
+    let webhook = 'disabled';
+    try { webhook = guardWebhookDispatch(report); } catch (_) { webhook = 'error'; }
+    res.json({ ok: true, id: report.id, webhook });
   } catch (e) {
     res.status(500).json({ ok: false });
   }
@@ -1405,6 +1834,9 @@ app.get('/api/coins', (req, res) => {
     }
     const ident = coinsIdentity(req);
     if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    // Lista negra: conta banida não lê creditos/prices nem materializa saldo.
+    const banGet = banCheckRequest(req, ident);
+    if (banGet) return res.status(403).json(banBlockBody(banGet));
     withCoinsLock(() => {
       const dados = readCoins();
       const acc = coinsEnsureAccount(dados, ident);
@@ -1435,6 +1867,9 @@ app.post('/api/coins/earn', (req, res) => {
     }
     const ident = coinsIdentity(req);
     if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    // Lista negra: conta banida não ganha moeda pelo tick.
+    const banEarn = banCheckRequest(req, ident);
+    if (banEarn) return res.status(403).json(banBlockBody(banEarn));
     withCoinsLock(() => {
       const dados = readCoins();
       const acc = coinsEnsureAccount(dados, ident);
@@ -1512,6 +1947,9 @@ app.post('/api/coins/spend', (req, res) => {
     }
     const ident = coinsIdentity(req);
     if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    // Lista negra: conta banida não compra (nada de gastar saldo/ganhar posse).
+    const banSpend = banCheckRequest(req, ident);
+    if (banSpend) return res.status(403).json(banBlockBody(banSpend));
     withCoinsLock(() => {
       const dados = readCoins();
       const acc = coinsEnsureAccount(dados, ident);
@@ -1612,6 +2050,11 @@ app.listen(PORT, () => {
   ensureData();
   social.ensure();
   writeCoins(readCoins()); // cria/valida data/coins.json (economia server-authoritative)
+  try { readBans(); } catch (_) {} // cria/valida data/bans.json (lista negra)
+  try {
+    const wurl = guardWebhookUrl();
+    console.log('[guard] webhook ' + (wurl ? ('configurado (' + guardWebhookHost(wurl) + ')') : 'nao configurado (GUARD_WEBHOOK_URL ou data/guard-webhook.json)'));
+  } catch (_) {}
   console.log(`[Reality Backend] http://0.0.0.0:${PORT}`);
   console.log(`[Reality Backend] Social: /api/social/*`);
   console.log(`[Reality Backend] Admin token: ${ADMIN_TOKEN === 'troque-este-token' ? '(PADRÃO — mude ADMIN_TOKEN!)' : '(custom)'}`);
