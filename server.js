@@ -751,6 +751,9 @@ app.post('/api/redeem', async (req, res) => {
     const username = String(req.body?.username || '').trim().slice(0, 40);
   const socialToken = String((req.headers.authorization || '').replace(/^Bearer /i, '') || '').slice(0, 80);
     if (!code) return res.status(400).json({ error: 'missing_code' });
+    // Identidade da conta (token social ou conta offline/uuid) — usada para creditar
+    // a recompensa de moedas do código AQUI no servidor, nunca no config do jogador.
+    const coinsIdentRedeem = coinsIdentity(req);
 
     const result = await withRedeemLock(async () => {
       const m = readManifest();
@@ -790,6 +793,16 @@ app.post('/api/redeem', async (req, res) => {
       }
 
       const source = entry.reward && typeof entry.reward === 'object' ? entry.reward : entry;
+      const premioMoedas = Math.max(0, Math.min(100000, Math.floor(Number(source.coins) || 0)));
+      // Recompensa de moedas (opcional): creditada AQUI (o servidor é a fonte de
+      // verdade da economia) — o launcher não soma mais nada no config local.
+      let moedasCreditadas = 0;
+      if (premioMoedas > 0) {
+        try {
+          const r = await coinsCreditRedeem(coinsIdentRedeem, premioMoedas, code);
+          moedasCreditadas = (r && r.credited) || 0;
+        } catch (_) {}
+      }
       return {
         status: 200,
         body: {
@@ -802,8 +815,10 @@ app.post('/api/redeem', async (req, res) => {
           cape: /^[a-z0-9_-]+\.png$/i.test(String(source.cape || '')) ? source.cape : null,
           role: String(source.role || '').replace(/[^\p{L}\p{N} .-]/gu, '').slice(0, 60) || null,
           displayName: String(source.displayName || '').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || null,
-          // Recompensa de moedas (opcional). Quem aplica e o launcher; limite defensivo aqui.
-          coins: Math.max(0, Math.min(100000, Math.floor(Number(source.coins) || 0))),
+          // Recompensa de moedas (opcional): valor do catálogo do código; o crédito
+          // de verdade foi feito acima no servidor (coinsCredited = quanto entrou).
+          coins: premioMoedas,
+          coinsCredited: moedasCreditadas,
           username: username || null,
           redeemedAt: Date.now()
         }
@@ -1070,9 +1085,533 @@ app.get('/api/ranking/time', (req, res) => {
   }
 });
 
+
+// ---------- MOEDAS server-authoritative (saldo / earn / spend por conta) ----------
+// A economia (saldo + posse) vive AQUI: <data>/coins.json. O config.json do
+// launcher DEIXOU de ser fonte de verdade — editar o arquivo local não credita
+// nada, porque quem credita é este servidor (tick de tempo com cooldown e teto
+// por conta) e quem valida a compra é o catálogo de preços daqui.
+//
+// Endpoints:
+//   GET  /api/coins        -> saldo + capas/selos comprados + catálogo de preços
+//   POST /api/coins/earn   -> { event: 'launcher'|'game' } => no MÁX. +5 a cada 5 min
+//   POST /api/coins/spend  -> { item, tipo: 'cape'|'seal', requestId } (idempotente)
+//
+// Identidade: token social (Authorization: Bearer) quando houver — a conta é a
+// dona do token (social.findUserByToken) — senão a conta offline/uuid (mesmo
+// modelo do Top Tempo: X-Reality-Uuid / X-Reality-Name).
+//
+// SEGURANCA: nenhum endpoint aceita valor de moeda vindo do cliente (amount,
+// coins, price são IGNORADOS); só o TIPO do evento de earn e o ITEM comprado.
+// Rate limit por IP REAL (clientKey) + cooldown/teto por conta; escrita atômica
+// (tmp + rename) e fila (withCoinsLock) como no ranking/manifesto.
+//
+// MIGRACAO: saldo legado do config.json do launcher NÃO entra na economia
+// (migratedFromLocalConfig = false). Contas começam em zero aqui e ganham de
+// novo pelo servidor; o launcher só reporta o valor local para o Guard.
+const COINS_FILE = path.join(DATA_DIR, 'coins.json');
+const COINS_EARN_INTERVAL_MS = 5 * 60 * 1000; // 1 crédito a cada 5 min (mesma economia de hoje)
+const COINS_EARN_AMOUNT = 5;                  // +5 moedas por crédito
+const COINS_EARN_MAX_PER_HOUR = 12;           // teto/hora (60 moedas/h)
+const COINS_EARN_MAX_PER_DAY = 240;           // teto/dia (1200 moedas/dia)
+const COINS_EARN_EVENTS = new Set(['launcher', 'game']); // só o TIPO do evento
+const COINS_MAX_ACCOUNTS = 20000;             // teto defensivo do arquivo
+const COINS_MAX_ITEMS = 500;                  // teto de itens por conta
+const COINS_MAX_REQUESTS = 50;                // idempotência: últimos N pedidos por conta
+const COINS_SPEND_MAX_PER_MIN = 30;           // rate limit por IP nas compras
+const COINS_EARN_MAX_PER_MIN = 20;            // rate limit por IP nos earns
+let coinsQueue = Promise.resolve();
+
+function withCoinsLock(task) {
+  const result = coinsQueue.then(task, task);
+  coinsQueue = result.catch(() => {});
+  return result;
+}
+
+// Catálogo de PREÇOS do servidor — fonte única da verdade na compra.
+// Os ids/preços são EXATAMENTE os de hoje no launcher (COIN_CAPE_PRICES e o
+// catálogo de selos); o preço que o cliente mandar é ignorado.
+const COIN_CAPE_PRICES = {
+  capa_montanha: 30,
+  reality_bolt: 50,
+  capa_copa_noruega: 250,
+  capa_copa_brasil: 250,
+  capa_copa_franca: 250,
+  capa_copa_argentina: 250,
+  capa_copa_espanha: 250,
+  capa_copa_portugal: 250,
+  capa_copa_italia: 250
+};
+// 120 selos do mercado (ids/preços idênticos ao catálogo embutido do launcher).
+const COIN_SEAL_PRICES = {"seal_001":25,"seal_002":42,"seal_003":59,"seal_004":40,"seal_005":57,"seal_006":38,"seal_007":70,"seal_008":87,"seal_009":104,"seal_010":192,"seal_011":209,"seal_012":135,"seal_013":303,"seal_014":671,"seal_015":47,"seal_016":28,"seal_017":45,"seal_018":26,"seal_019":43,"seal_020":60,"seal_021":104,"seal_022":70,"seal_023":87,"seal_024":104,"seal_025":174,"seal_026":191,"seal_027":390,"seal_028":256,"seal_029":875,"seal_030":50,"seal_031":31,"seal_032":48,"seal_033":29,"seal_034":46,"seal_035":87,"seal_036":104,"seal_037":70,"seal_038":87,"seal_039":139,"seal_040":156,"seal_041":326,"seal_042":343,"seal_043":662,"seal_044":36,"seal_045":53,"seal_046":34,"seal_047":51,"seal_048":32,"seal_049":49,"seal_050":87,"seal_051":104,"seal_052":70,"seal_053":195,"seal_054":212,"seal_055":138,"seal_056":279,"seal_057":649,"seal_058":58,"seal_059":39,"seal_060":56,"seal_061":37,"seal_062":54,"seal_063":35,"seal_064":70,"seal_065":87,"seal_066":104,"seal_067":160,"seal_068":177,"seal_069":194,"seal_070":366,"seal_071":636,"seal_072":44,"seal_073":25,"seal_074":42,"seal_075":59,"seal_076":40,"seal_077":57,"seal_078":104,"seal_079":70,"seal_080":87,"seal_081":104,"seal_082":142,"seal_083":159,"seal_084":302,"seal_085":319,"seal_086":1042,"seal_087":47,"seal_088":28,"seal_089":45,"seal_090":26,"seal_091":43,"seal_092":87,"seal_093":104,"seal_094":70,"seal_095":87,"seal_096":198,"seal_097":215,"seal_098":141,"seal_099":255,"seal_100":627,"seal_101":33,"seal_102":50,"seal_103":31,"seal_104":48,"seal_105":29,"seal_106":46,"seal_107":87,"seal_108":104,"seal_109":70,"seal_110":163,"seal_111":180,"seal_112":197,"seal_113":342,"seal_114":614,"seal_115":55,"seal_116":36,"seal_117":53,"seal_118":34,"seal_119":51,"seal_120":32};
+
+function coinsCatalog() {
+  return { capes: Object.assign({}, COIN_CAPE_PRICES), seals: Object.assign({}, COIN_SEAL_PRICES) };
+}
+
+function coinsPolicy() {
+  return {
+    earnIntervalMs: COINS_EARN_INTERVAL_MS,
+    earnAmount: COINS_EARN_AMOUNT,
+    maxPerHour: COINS_EARN_MAX_PER_HOUR,
+    maxPerDay: COINS_EARN_MAX_PER_DAY
+  };
+}
+
+function coinsDefaultFile() {
+  return {
+    version: 1,
+    // Flags de migração explícitas: o saldo legado do config.json do jogador
+    // NUNCA é importado (senão o "coins: 100000000000" editado no arquivo
+    // viraria saldo real). Quem nunca ganhou AQUI começa com zero.
+    migratedFromLocalConfig: false,
+    migrationNote: 'Saldos de config.json do launcher nao migram: a economia comeca zerada por conta e so o servidor credita.',
+    policy: coinsPolicy(),
+    accounts: {}
+  };
+}
+
+function coinsSanitizeAccount(bruto) {
+  if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return null;
+  const coins = Math.max(0, Math.min(1e12, Math.floor(Number(bruto.coins) || 0)));
+  const lista = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.length <= 64).slice(0, COINS_MAX_ITEMS) : []);
+  const l = bruto.ledger && typeof bruto.ledger === 'object' ? bruto.ledger : {};
+  const janela = (j) => ({ windowStart: Math.max(0, Math.floor(Number(j && j.windowStart) || 0)), count: Math.max(0, Math.floor(Number(j && j.count) || 0)) });
+  const requests = {};
+  if (l.requests && typeof l.requests === 'object' && !Array.isArray(l.requests)) {
+    for (const [k, v] of Object.entries(l.requests)) {
+      if (!/^[A-Za-z0-9_-]{6,64}$/.test(k)) continue;
+      requests[k] = {
+        item: String((v && v.item) || '').slice(0, 64),
+        tipo: String((v && v.tipo) || '').slice(0, 16),
+        at: Math.max(0, Math.floor(Number(v && v.at) || 0)),
+        coins: Math.max(0, Math.floor(Number(v && v.coins) || 0))
+      };
+    }
+  }
+  return {
+    key: String(bruto.key || '').slice(0, 80),
+    kind: bruto.kind === 'social' ? 'social' : 'offline',
+    name: String(bruto.name || '').replace(/[\r\n\t]/g, ' ').slice(0, 32),
+    coins,
+    ownedCapes: lista(bruto.ownedCapes),
+    ownedSeals: lista(bruto.ownedSeals),
+    ledger: {
+      lastEarnAt: Math.max(0, Math.floor(Number(l.lastEarnAt) || 0)),
+      lastEarnEvent: String(l.lastEarnEvent || '').slice(0, 16),
+      totalEarned: Math.max(0, Math.floor(Number(l.totalEarned) || 0)),
+      earnCount: Math.max(0, Math.floor(Number(l.earnCount) || 0)),
+      hour: janela(l.hour),
+      day: janela(l.day),
+      spent: Math.max(0, Math.floor(Number(l.spent) || 0)),
+      items: Array.isArray(l.items) ? l.items.slice(-COINS_MAX_ITEMS).map((it) => ({
+        item: String((it && it.item) || '').slice(0, 64),
+        tipo: String((it && it.tipo) || '').slice(0, 16),
+        price: Math.max(0, Math.floor(Number(it && it.price) || 0)),
+        at: Math.max(0, Math.floor(Number(it && it.at) || 0))
+      })) : [],
+      requests,
+      sources: lista(l.sources),
+      anomalies: Array.isArray(l.anomalies) ? l.anomalies.slice(-20).map((a) => ({
+        at: Math.max(0, Math.floor(Number(a && a.at) || 0)),
+        reason: String((a && a.reason) || '').slice(0, 40),
+        detail: String((a && a.detail) || '').slice(0, 80)
+      })) : []
+    },
+    createdAt: Math.max(0, Math.floor(Number(bruto.createdAt) || 0)),
+    updatedAt: Math.max(0, Math.floor(Number(bruto.updatedAt) || 0))
+  };
+}
+
+function readCoins() {
+  try {
+    if (!fs.existsSync(COINS_FILE)) return coinsDefaultFile();
+    const bruto = JSON.parse(fs.readFileSync(COINS_FILE, 'utf-8'));
+    if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return coinsDefaultFile();
+    const base = coinsDefaultFile();
+    const accounts = {};
+    const origem = bruto.accounts && typeof bruto.accounts === 'object' && !Array.isArray(bruto.accounts) ? bruto.accounts : {};
+    for (const [chave, valor] of Object.entries(origem)) {
+      if (!/^(social|offline):[A-Za-z0-9_.:-]{1,70}$/.test(String(chave))) continue;
+      const acc = coinsSanitizeAccount(valor);
+      if (!acc) continue;
+      acc.key = String(chave);
+      accounts[chave] = acc;
+    }
+    return Object.assign(base, {
+      migratedFromLocalConfig: bruto.migratedFromLocalConfig === true,
+      accounts
+    });
+  } catch (_) {
+    return coinsDefaultFile(); // arquivo ausente/corrompido => recomeça vazio
+  }
+}
+
+function writeCoins(dados) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    // teto defensivo: mantém as contas mais recentes
+    const chaves = Object.keys(dados.accounts || {});
+    if (chaves.length > COINS_MAX_ACCOUNTS) {
+      chaves
+        .sort((a, b) => (dados.accounts[b].updatedAt || 0) - (dados.accounts[a].updatedAt || 0))
+        .slice(COINS_MAX_ACCOUNTS)
+        .forEach((k) => delete dados.accounts[k]);
+    }
+    dados.policy = coinsPolicy();
+    dados.updatedAt = new Date().toISOString();
+    const tempFile = COINS_FILE + '.tmp';
+    fs.writeFileSync(tempFile, JSON.stringify(dados, null, 2), 'utf-8');
+    fs.renameSync(tempFile, COINS_FILE); // troca atômica
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Identidade da conta: token social > conta offline/uuid (mesmo modelo do Top Tempo). */
+function coinsIdentity(req) {
+  try {
+    const m = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+    const token = m && m[1];
+    if (token) {
+      const u = social.findUserByToken(token);
+      if (u && u.id) {
+        return {
+          key: 'social:' + String(u.id).slice(0, 70),
+          name: String(u.username || '').replace(/[\r\n\t]/g, ' ').slice(0, 32),
+          kind: 'social',
+          device: String(req.headers['x-reality-device'] || '').slice(0, 64)
+        };
+      }
+    }
+  } catch (_) { /* sem social/token inválido: cai pro uuid */ }
+  const bruto = String(req.headers['x-reality-uuid'] || (req.body && req.body.uuid) || '').trim();
+  const name = String(req.headers['x-reality-name'] || (req.body && req.body.name) || '').replace(/[\r\n\t]/g, ' ').slice(0, 32);
+  if (!/^[0-9a-fA-F-]{32,36}$/.test(bruto)) return null;
+  const nome = /^[A-Za-z0-9_]{1,16}$/.test(name) ? name : '';
+  return {
+    key: 'offline:' + normalizeUuid(bruto),
+    name: nome,
+    kind: 'offline',
+    device: String(req.headers['x-reality-device'] || '').slice(0, 64)
+  };
+}
+
+function coinsNewLedger() {
+  return {
+    lastEarnAt: 0,
+    lastEarnEvent: '',
+    totalEarned: 0,
+    earnCount: 0,
+    hour: { windowStart: 0, count: 0 },
+    day: { windowStart: 0, count: 0 },
+    spent: 0,
+    items: [],
+    requests: {},
+    sources: [],
+    anomalies: []
+  };
+}
+
+function coinsEnsureAccount(dados, ident) {
+  let acc = dados.accounts[ident.key];
+  if (!acc) {
+    acc = {
+      key: ident.key,
+      kind: ident.kind,
+      name: ident.name || '',
+      coins: 0,
+      ownedCapes: [],
+      ownedSeals: [],
+      ledger: coinsNewLedger(),
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    dados.accounts[ident.key] = acc;
+  }
+  if (ident.name) acc.name = ident.name;
+  return acc;
+}
+
+/**
+ * Ledger/anti-fraude: registra de onde veio o pedido (X-Reality-Device) e marca
+ * anomalia quando uma conta JÁ usada aparece com um device novo (config.json
+ * copiado de outra máquina, uuid forjado etc). NUNCA bloqueia o jogador legítimo.
+ */
+function coinsNoteSource(acc, ident) {
+  const src = String(ident.device || '').slice(0, 64);
+  if (!src) return;
+  const ledger = acc.ledger;
+  if (!Array.isArray(ledger.sources)) ledger.sources = [];
+  if (!ledger.sources.includes(src)) {
+    if (ledger.sources.length >= 1) {
+      ledger.anomalies.push({ at: Date.now(), reason: 'device_novo', detail: src.slice(0, 32) });
+      if (ledger.anomalies.length > 20) ledger.anomalies.shift();
+    }
+    ledger.sources.push(src);
+    if (ledger.sources.length > 3) ledger.sources.shift();
+  }
+}
+
+function coinsPublicState(acc, ident) {
+  const now = Date.now();
+  const ledger = acc.ledger;
+  const proximo = Math.max(0, (ledger.lastEarnAt || 0) + COINS_EARN_INTERVAL_MS - now);
+  return {
+    ok: true,
+    account: { kind: acc.kind, name: acc.name || (ident && ident.name) || '' },
+    coins: Math.max(0, Math.floor(Number(acc.coins) || 0)),
+    ownedCapes: Array.isArray(acc.ownedCapes) ? acc.ownedCapes.slice() : [],
+    ownedSeals: Array.isArray(acc.ownedSeals) ? acc.ownedSeals.slice() : [],
+    earn: {
+      lastEarnAt: ledger.lastEarnAt || 0,
+      nextInMs: proximo,
+      totalEarned: ledger.totalEarned || 0,
+      earnCount: ledger.earnCount || 0,
+      remainingHour: Math.max(0, COINS_EARN_MAX_PER_HOUR - ((ledger.hour && ledger.hour.count) || 0)),
+      remainingDay: Math.max(0, COINS_EARN_MAX_PER_DAY - ((ledger.day && ledger.day.count) || 0))
+    },
+    policy: coinsPolicy(),
+    prices: coinsCatalog(),
+    serverTime: now
+  };
+}
+
+/** Credita moedas de código de resgate (chamado pelo POST /api/redeem). */
+function coinsCreditRedeem(ident, amount, code) {
+  const premio = Math.max(0, Math.min(100000, Math.floor(Number(amount) || 0)));
+  if (!ident || !premio) return Promise.resolve({ credited: 0 });
+  return withCoinsLock(() => {
+    const dados = readCoins();
+    const acc = coinsEnsureAccount(dados, ident);
+    coinsNoteSource(acc, ident);
+    acc.coins = Math.max(0, Math.floor(Number(acc.coins) || 0)) + premio;
+    acc.ledger.totalEarned = Math.max(0, Math.floor(Number(acc.ledger.totalEarned) || 0)) + premio;
+    acc.ledger.lastEarnEvent = 'code:' + String(code || '').slice(0, 24);
+    acc.ledger.earnCount = Math.max(0, Math.floor(Number(acc.ledger.earnCount) || 0)) + 1;
+    acc.updatedAt = Date.now();
+    writeCoins(dados);
+    return { credited: premio, coins: acc.coins };
+  });
+}
+
+// GET /api/coins — saldo + posse + catálogo da conta (token social ou uuid offline).
+app.get('/api/coins', (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!rateLimit(clientKey(req), 'coins-get', 120, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_requests' });
+    }
+    const ident = coinsIdentity(req);
+    if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    withCoinsLock(() => {
+      const dados = readCoins();
+      const acc = coinsEnsureAccount(dados, ident);
+      coinsNoteSource(acc, ident);
+      writeCoins(dados); // materializa a conta (zero) no arquivo
+      return coinsPublicState(acc, ident);
+    }).then((estado) => {
+      try { res.json(estado); } catch (_) {}
+    }).catch(() => {
+      try { res.status(500).json({ ok: false, error: 'coins_read_failed' }); } catch (_) {}
+    });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'coins_read_failed' }); } catch (_) {}
+  }
+});
+
+// POST /api/coins/earn — o launcher reporta o TICK (tipo do evento). O valor é
+// SEMPRE o do servidor; o cooldown/teto é por conta (o cliente não escolhe nada).
+app.post('/api/coins/earn', (req, res) => {
+  try {
+    const body = req.body || {};
+    const event = String(body.event || 'launcher').toLowerCase();
+    if (!COINS_EARN_EVENTS.has(event)) {
+      return res.status(400).json({ ok: false, error: 'invalid_event' });
+    }
+    if (!rateLimit(clientKey(req), 'coins-earn', COINS_EARN_MAX_PER_MIN, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_requests' });
+    }
+    const ident = coinsIdentity(req);
+    if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    withCoinsLock(() => {
+      const dados = readCoins();
+      const acc = coinsEnsureAccount(dados, ident);
+      coinsNoteSource(acc, ident);
+      const ledger = acc.ledger;
+      const now = Date.now();
+      const proximo = Math.max(0, (ledger.lastEarnAt || 0) + COINS_EARN_INTERVAL_MS - now);
+      if (proximo > 0) {
+        acc.updatedAt = now;
+        writeCoins(dados);
+        return { status: 429, body: { ok: false, error: 'too_soon', nextInMs: proximo, coins: Math.max(0, Math.floor(Number(acc.coins) || 0)) } };
+      }
+      // Janelas de teto (hora/dia) — o servidor é quem conta, nunca o cliente.
+      if (!ledger.hour || now - (ledger.hour.windowStart || 0) >= 3600000) ledger.hour = { windowStart: now, count: 0 };
+      if (!ledger.day || now - (ledger.day.windowStart || 0) >= 86400000) ledger.day = { windowStart: now, count: 0 };
+      if (ledger.hour.count >= COINS_EARN_MAX_PER_HOUR) {
+        return { status: 429, body: { ok: false, error: 'hour_cap', coins: Math.max(0, Math.floor(Number(acc.coins) || 0)) } };
+      }
+      if (ledger.day.count >= COINS_EARN_MAX_PER_DAY) {
+        return { status: 429, body: { ok: false, error: 'day_cap', coins: Math.max(0, Math.floor(Number(acc.coins) || 0)) } };
+      }
+      acc.coins = Math.max(0, Math.floor(Number(acc.coins) || 0)) + COINS_EARN_AMOUNT;
+      ledger.totalEarned = Math.max(0, Math.floor(Number(ledger.totalEarned) || 0)) + COINS_EARN_AMOUNT;
+      ledger.earnCount = Math.max(0, Math.floor(Number(ledger.earnCount) || 0)) + 1;
+      ledger.lastEarnAt = now;
+      ledger.lastEarnEvent = event;
+      ledger.hour.count += 1;
+      ledger.day.count += 1;
+      acc.updatedAt = now;
+      writeCoins(dados);
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          credited: COINS_EARN_AMOUNT,
+          event,
+          coins: acc.coins,
+          nextInMs: COINS_EARN_INTERVAL_MS,
+          earn: {
+            totalEarned: ledger.totalEarned,
+            earnCount: ledger.earnCount,
+            remainingHour: Math.max(0, COINS_EARN_MAX_PER_HOUR - ledger.hour.count),
+            remainingDay: Math.max(0, COINS_EARN_MAX_PER_DAY - ledger.day.count)
+          }
+        }
+      };
+    }).then((out) => {
+      try { res.status(out.status).json(out.body); } catch (_) {}
+    }).catch(() => {
+      try { res.status(500).json({ ok: false, error: 'coins_earn_failed' }); } catch (_) {}
+    });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'coins_earn_failed' }); } catch (_) {}
+  }
+});
+
+// POST /api/coins/spend — compra validada AQUI: preço do catálogo do servidor,
+// débito atômico, posse gravada, idempotente por requestId.
+app.post('/api/coins/spend', (req, res) => {
+  try {
+    const body = req.body || {};
+    const item = String(body.item || '').trim().slice(0, 64);
+    const tipo = String(body.tipo || '').trim().toLowerCase();
+    const requestId = String(body.requestId || '').trim().slice(0, 64);
+    if (tipo !== 'cape' && tipo !== 'seal') {
+      return res.status(400).json({ ok: false, error: 'invalid_tipo' });
+    }
+    const catalogo = tipo === 'cape' ? COIN_CAPE_PRICES : COIN_SEAL_PRICES;
+    const price = catalogo[item];
+    if (!Number.isFinite(price)) {
+      return res.status(400).json({ ok: false, error: 'unknown_item' });
+    }
+    if (!rateLimit(clientKey(req), 'coins-spend', COINS_SPEND_MAX_PER_MIN, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_requests' });
+    }
+    const ident = coinsIdentity(req);
+    if (!ident) return res.status(400).json({ ok: false, error: 'no_account' });
+    withCoinsLock(() => {
+      const dados = readCoins();
+      const acc = coinsEnsureAccount(dados, ident);
+      coinsNoteSource(acc, ident);
+      const saldo = Math.max(0, Math.floor(Number(acc.coins) || 0));
+      const posse = tipo === 'cape' ? acc.ownedCapes : acc.ownedSeals;
+      const ledger = acc.ledger;
+      // Idempotência: mesmo pedido repetido (retry/timeout) não debita de novo.
+      if (/^[A-Za-z0-9_-]{6,64}$/.test(requestId) && ledger.requests && ledger.requests[requestId]) {
+        const anterior = ledger.requests[requestId];
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            already: true,
+            idempotent: true,
+            item: anterior.item,
+            tipo: anterior.tipo,
+            coins: saldo,
+            price: anterior.item === item ? price : undefined
+          }
+        };
+      }
+      if (posse.includes(item)) {
+        return { status: 200, body: { ok: true, already: true, item, tipo, coins: saldo, price } };
+      }
+      if (saldo < price) {
+        return { status: 200, body: { ok: false, error: 'not_enough', item, tipo, coins: saldo, need: price } };
+      }
+      acc.coins = saldo - price;
+      posse.push(item);
+      if (posse.length > COINS_MAX_ITEMS) posse.splice(0, posse.length - COINS_MAX_ITEMS);
+      ledger.spent = Math.max(0, Math.floor(Number(ledger.spent) || 0)) + price;
+      ledger.items.push({ item, tipo, price, at: Date.now() });
+      if (ledger.items.length > COINS_MAX_ITEMS) ledger.items.splice(0, ledger.items.length - COINS_MAX_ITEMS);
+      if (/^[A-Za-z0-9_-]{6,64}$/.test(requestId)) {
+        if (!ledger.requests || typeof ledger.requests !== 'object') ledger.requests = {};
+        ledger.requests[requestId] = { item, tipo, at: Date.now(), coins: acc.coins };
+        const chaves = Object.keys(ledger.requests);
+        if (chaves.length > COINS_MAX_REQUESTS) {
+          chaves.sort((a, b) => (ledger.requests[a].at || 0) - (ledger.requests[b].at || 0));
+          chaves.slice(0, chaves.length - COINS_MAX_REQUESTS).forEach((k) => delete ledger.requests[k]);
+        }
+      }
+      acc.updatedAt = Date.now();
+      writeCoins(dados);
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          item,
+          tipo,
+          price,
+          spent: price,
+          coins: acc.coins,
+          ownedCapes: acc.ownedCapes.slice(),
+          ownedSeals: acc.ownedSeals.slice(),
+          spentTotal: ledger.spent
+        }
+      };
+    }).then((out) => {
+      try { res.status(out.status).json(out.body); } catch (_) {}
+    }).catch(() => {
+      try { res.status(500).json({ ok: false, error: 'coins_spend_failed' }); } catch (_) {}
+    });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'coins_spend_failed' }); } catch (_) {}
+  }
+});
+
+// GET /api/coins/ledger — leitura para o DONO (mesma chave dos relatórios do Guard):
+// o ledger por conta (último earn, total ganho, itens, anomalias) é o que denuncia
+// config.json editado / uuid forjado. Sem chave configurada, fica desabilitado.
+app.get('/api/coins/ledger', (req, res) => {
+  try {
+    if (GUARD_KEY_IS_DEFAULT) {
+      return res.status(503).json({ ok: false, error: 'guard_admin_disabled_no_key' });
+    }
+    const key = String(req.query.key || req.headers['x-admin-key'] || '');
+    if (key !== GUARD_ADMIN_KEY) return res.status(401).json({ ok: false, error: 'unauthorized' });
+    const dados = readCoins();
+    const contas = Object.values(dados.accounts || {})
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10) || 50)))
+      .map((acc) => ({ key: acc.key, kind: acc.kind, name: acc.name, coins: acc.coins, ledger: acc.ledger, updatedAt: acc.updatedAt }));
+    res.json({
+      ok: true,
+      total: Object.keys(dados.accounts || {}).length,
+      migratedFromLocalConfig: dados.migratedFromLocalConfig === true,
+      accounts: contas
+    });
+  } catch (e) {
+    try { res.status(500).json({ ok: false, error: 'coins_ledger_failed' }); } catch (_) {}
+  }
+});
+
 app.listen(PORT, () => {
   ensureData();
   social.ensure();
+  writeCoins(readCoins()); // cria/valida data/coins.json (economia server-authoritative)
   console.log(`[Reality Backend] http://0.0.0.0:${PORT}`);
   console.log(`[Reality Backend] Social: /api/social/*`);
   console.log(`[Reality Backend] Admin token: ${ADMIN_TOKEN === 'troque-este-token' ? '(PADRÃO — mude ADMIN_TOKEN!)' : '(custom)'}`);
