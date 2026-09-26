@@ -1605,17 +1605,29 @@ function withCoinsLock(task) {
 // Catálogo de PREÇOS do servidor — fonte única da verdade na compra.
 // Os ids/preços são EXATAMENTE os de hoje no launcher (COIN_CAPE_PRICES e o
 // catálogo de selos); o preço que o cliente mandar é ignorado.
+//
+// FORA DA LOJA (pedido do dono): as 7 capas da COPA saíram do catálogo —
+//   capa_copa_noruega, capa_copa_brasil, capa_copa_franca, capa_copa_argentina,
+//   capa_copa_espanha, capa_copa_portugal, capa_copa_italia.
+// Efeitos: (a) não aparecem mais no catálogo do GET /api/coins; (b) comprar
+// qualquer uma delas responde 400 unknown_item (nada é debitado); (c) a POSSE de
+// quem já comprou NÃO é tocada — ownedCapes continua como está e é devolvido no
+// GET /api/coins, então a capa segue equipável para o dono.
 const COIN_CAPE_PRICES = {
   capa_montanha: 30,
-  reality_bolt: 50,
-  capa_copa_noruega: 250,
-  capa_copa_brasil: 250,
-  capa_copa_franca: 250,
-  capa_copa_argentina: 250,
-  capa_copa_espanha: 250,
-  capa_copa_portugal: 250,
-  capa_copa_italia: 250
+  reality_bolt: 50
 };
+// Capas de LOJA aposentadas (fora de venda, posse preservada). Não entram no
+// catálogo de preços — servem só para documentar/checar a aposentadoria.
+const COIN_CAPE_RETIRED = [
+  'capa_copa_noruega',
+  'capa_copa_brasil',
+  'capa_copa_franca',
+  'capa_copa_argentina',
+  'capa_copa_espanha',
+  'capa_copa_portugal',
+  'capa_copa_italia'
+];
 // 120 selos do mercado (ids/preços idênticos ao catálogo embutido do launcher).
 const COIN_SEAL_PRICES = {"seal_001":25,"seal_002":42,"seal_003":59,"seal_004":40,"seal_005":57,"seal_006":38,"seal_007":70,"seal_008":87,"seal_009":104,"seal_010":192,"seal_011":209,"seal_012":135,"seal_013":303,"seal_014":671,"seal_015":47,"seal_016":28,"seal_017":45,"seal_018":26,"seal_019":43,"seal_020":60,"seal_021":104,"seal_022":70,"seal_023":87,"seal_024":104,"seal_025":174,"seal_026":191,"seal_027":390,"seal_028":256,"seal_029":875,"seal_030":50,"seal_031":31,"seal_032":48,"seal_033":29,"seal_034":46,"seal_035":87,"seal_036":104,"seal_037":70,"seal_038":87,"seal_039":139,"seal_040":156,"seal_041":326,"seal_042":343,"seal_043":662,"seal_044":36,"seal_045":53,"seal_046":34,"seal_047":51,"seal_048":32,"seal_049":49,"seal_050":87,"seal_051":104,"seal_052":70,"seal_053":195,"seal_054":212,"seal_055":138,"seal_056":279,"seal_057":649,"seal_058":58,"seal_059":39,"seal_060":56,"seal_061":37,"seal_062":54,"seal_063":35,"seal_064":70,"seal_065":87,"seal_066":104,"seal_067":160,"seal_068":177,"seal_069":194,"seal_070":366,"seal_071":636,"seal_072":44,"seal_073":25,"seal_074":42,"seal_075":59,"seal_076":40,"seal_077":57,"seal_078":104,"seal_079":70,"seal_080":87,"seal_081":104,"seal_082":142,"seal_083":159,"seal_084":302,"seal_085":319,"seal_086":1042,"seal_087":47,"seal_088":28,"seal_089":45,"seal_090":26,"seal_091":43,"seal_092":87,"seal_093":104,"seal_094":70,"seal_095":87,"seal_096":198,"seal_097":215,"seal_098":141,"seal_099":255,"seal_100":627,"seal_101":33,"seal_102":50,"seal_103":31,"seal_104":48,"seal_105":29,"seal_106":46,"seal_107":87,"seal_108":104,"seal_109":70,"seal_110":163,"seal_111":180,"seal_112":197,"seal_113":342,"seal_114":614,"seal_115":55,"seal_116":36,"seal_117":53,"seal_118":34,"seal_119":51,"seal_120":32};
 
