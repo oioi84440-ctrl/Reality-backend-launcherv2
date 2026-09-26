@@ -926,12 +926,6 @@ app.post('/api/redeem', async (req, res) => {
       const m = readManifest();
       const entry = (m.codes || {})[code];
       if (!entry) return { status: 404, body: { error: 'invalid_code' } };
-      if (entry.usesLeft != null && Number(entry.usesLeft) <= 0) {
-        return { status: 410, body: { error: 'code_exhausted' } };
-      }
-      if (entry.expiresAt && (!Number.isFinite(Date.parse(entry.expiresAt)) || Date.now() > Date.parse(entry.expiresAt))) {
-        return { status: 410, body: { error: 'code_expired' } };
-      }
 
       // Um jogador não pode resgatar o mesmo código duas vezes, mesmo quando
       // o código tem usos ilimitados. Só aplicamos a regra se houver nome.
@@ -945,8 +939,40 @@ app.post('/api/redeem', async (req, res) => {
   } catch (_) {}
   const redeemer = contaId || (username ? hashRedeemer(username) : null);
       const redeemedBy = Array.isArray(entry.redeemedBy) ? entry.redeemedBy : [];
+      // ORDEM DAS CHECAGENS: identidade/duplicidade ANTES de estoque e validade.
+      // A MESMA conta que já usou (mesmo num código esgotado) recebe 409
+      // code_already_redeemed; OUTRA conta num código esgotado recebe 410
+      // code_exhausted — antes tudo virava 410 e o jogador não entendia.
+      // Vale para todo código de uso limitado; código ilimitado (usesLeft null)
+      // segue idêntico ao de antes.
       if (redeemer && redeemedBy.includes(redeemer)) {
         return { status: 409, body: { error: 'code_already_redeemed' } };
+      }
+      // Recompensa de SELO EXCLUSIVO (ex.: beta_test) identificada AQUI, ANTES das
+      // checagens de estoque/validade: o selo é amarrado à CONTA, então a MESMA
+      // conta recebe 409 mesmo com o código esgotado e OUTRA conta recebe 410
+      // (antes, com usesLeft 1, a mesma pessoa levava 410 e não entendia).
+      const sealPedido = String(
+        (entry.reward && typeof entry.reward === 'object' && entry.reward.seal) || entry.seal || ''
+      ).trim().toLowerCase();
+      const seloExclusivo = !!COIN_SEAL_EXCLUSIVE[sealPedido];
+      const contaKey = coinsIdentRedeem && coinsIdentRedeem.key ? String(coinsIdentRedeem.key) : null;
+      // Chave de duplicidade da CONTA (social/id ou offline/uuid): o mesmo dono
+      // não leva o selo duas vezes nem trocando o nick do launcher.
+      const chaveConta = seloExclusivo && contaKey ? 'k:' + contaKey : null;
+      if (chaveConta && redeemedBy.includes(chaveConta)) {
+        return { status: 409, body: { error: 'code_already_redeemed' } };
+      }
+      if (entry.usesLeft != null && Number(entry.usesLeft) <= 0) {
+        return { status: 410, body: { error: 'code_exhausted' } };
+      }
+      if (entry.expiresAt && (!Number.isFinite(Date.parse(entry.expiresAt)) || Date.now() > Date.parse(entry.expiresAt))) {
+        return { status: 410, body: { error: 'code_expired' } };
+      }
+      // Selo exige CONTA: sem identidade o código nem é consumido (por isso esta
+      // checagem vem DEPOIS do esgotado — código esgotado sem identidade = 410).
+      if (seloExclusivo && !contaKey) {
+        return { status: 400, body: { error: 'no_account', message: 'Entre numa conta para resgatar este codigo.' } };
       }
 
       if (entry.usesLeft != null) entry.usesLeft = Math.max(0, Number(entry.usesLeft) - 1);
@@ -954,12 +980,27 @@ app.post('/api/redeem', async (req, res) => {
         // Limita o histórico para não deixar o manifesto crescer sem controle.
         entry.redeemedBy = [...redeemedBy, redeemer].slice(-5000);
       }
+      // Chave de CONTA do selo exclusivo (social/id ou offline/uuid): engorda o
+      // histórico SEM duplicar e SEM mexer no que o bloco acima gravou — assim a
+      // mesma conta não leva o selo duas vezes nem trocando o nick.
+      if (chaveConta && !(Array.isArray(entry.redeemedBy) ? entry.redeemedBy : []).includes(chaveConta)) {
+        entry.redeemedBy = [...(Array.isArray(entry.redeemedBy) ? entry.redeemedBy : []), chaveConta].slice(-5000);
+      }
       if (redeemer || entry.usesLeft != null) {
         m.codes[code] = entry;
         persistManifest(m);
       }
 
       const source = entry.reward && typeof entry.reward === 'object' ? entry.reward : entry;
+      // Selo EXCLUSIVO do código: a POSSE é gravada AQUI, na conta (ownedSeals do
+      // data/coins.json) — o launcher só espelha o que o GET /api/coins devolve.
+      let seloCreditado = false;
+      if (seloExclusivo) {
+        try {
+          const g = await coinsGrantSeal(coinsIdentRedeem, sealPedido, code);
+          seloCreditado = !!(g && g.granted);
+        } catch (_) {}
+      }
       const premioMoedas = Math.max(0, Math.min(100000, Math.floor(Number(source.coins) || 0)));
       // Recompensa de moedas (opcional): creditada AQUI (o servidor é a fonte de
       // verdade da economia) — o launcher não soma mais nada no config local.
@@ -986,6 +1027,10 @@ app.post('/api/redeem', async (req, res) => {
           // de verdade foi feito acima no servidor (coinsCredited = quanto entrou).
           coins: premioMoedas,
           coinsCredited: moedasCreditadas,
+          // Selo exclusivo do código (id) + se a posse entrou AGORA na conta. Quem
+          // confirma a posse é o GET /api/coins (ownedSeals) — nunca o cliente.
+          seal: seloExclusivo ? sealPedido : null,
+          sealGranted: seloCreditado,
           username: username || null,
           redeemedAt: Date.now()
         }
@@ -1578,6 +1623,81 @@ function coinsCatalog() {
   return { capes: Object.assign({}, COIN_CAPE_PRICES), seals: Object.assign({}, COIN_SEAL_PRICES) };
 }
 
+// ---------- Selo exclusivo 'beta_test' (códigos BTSRLY*, uso único) ----------
+// Espelho do launcher (src/sealsExclusive.js / src/redeemCatalog.js):
+//   * NÃO está à venda: fica FORA do COIN_SEAL_PRICES — POST /api/coins/spend
+//     com item 'beta_test' responde 400 not_for_sale (nada é debitado).
+//   * A posse SÓ entra pelo resgate de um dos 10 códigos BTSRLY*: o POST
+//     /api/redeem grava o id no ownedSeals da CONTA (data/coins.json) — nunca
+//     no config.json do jogador.
+//   * Cada código vale 1 resgate (usesLeft: 1) e cada CONTA resgata 1 vez.
+const BETA_TEST_SEAL_ID = 'beta_test';
+// Catálogo de EXCLUSIVOS (arte idêntica à do launcher): vai no GET /api/coins ->
+// exclusiveSeals e NUNCA entra em prices.seals (que é só o que está à venda).
+const COIN_SEAL_EXCLUSIVE = {
+  beta_test: {
+    name: 'Beta Test',
+    rarity: 'legendary',
+    color: '#22c55e',
+    color2: '#064e3b',
+    gradient: 'linear-gradient(135deg,#4ade80,#22c55e 45%,#0f766e)',
+    icon: '✦',
+    exclusive: true,
+    price: 0,
+    forSale: false
+  }
+};
+
+function coinsExclusiveSeals() {
+  const out = {};
+  for (const [id, def] of Object.entries(COIN_SEAL_EXCLUSIVE)) out[id] = Object.assign({}, def);
+  return out;
+}
+
+/** Os 10 códigos de USO ÚNICO do selo 'Beta Test' (o launcher já os conhece). */
+const BETA_TEST_CODES = [
+  'BTSRLY10', 'BTSRLY12', 'BTSRLY50', 'BTSRLY42', 'BTSRLY67',
+  'BTSRLY2001', 'BTSRLY302', 'BTSRLY163', 'BTSRLY0725', 'BTSRLY5427'
+];
+
+function betaTestCodeEntry() {
+  return {
+    visual: null,
+    badge: 'Beta Test',
+    cape: null,
+    role: 'Beta Test',
+    displayName: null,
+    seal: BETA_TEST_SEAL_ID, // recompensa: selo exclusivo gravado na CONTA
+    usesLeft: 1,
+    redeemedBy: []
+  };
+}
+
+/**
+ * SEMENTE IDEMPOTENTE (rodada no boot): cria no manifest.codes só os códigos
+ * BTSRLY* que AINDA NÃO EXISTEM — nunca sobrescreve um código existente (nem
+ * para "restaurar" usesLeft/redeemedBy: o que já foi resgatado segue
+ * resgatado). Sem novidade, não toca no arquivo.
+ */
+function seedBetaTestCodes() {
+  return withRedeemLock(() => {
+    const m = readManifest();
+    if (!m.codes || typeof m.codes !== 'object' || Array.isArray(m.codes)) m.codes = {};
+    const criados = [];
+    for (const code of BETA_TEST_CODES) {
+      const atual = m.codes[code];
+      if (atual && typeof atual === 'object' && !Array.isArray(atual)) continue; // existe: preserva
+      m.codes[code] = betaTestCodeEntry();
+      criados.push(code);
+    }
+    if (criados.length) {
+      writeManifest(m); // grava atômico (tmp + rename) e atualiza updatedAt/version
+      return { created: criados };
+    }
+    return { created: [] };
+  });
+}
+
 function coinsPolicy() {
   return {
     earnIntervalMs: COINS_EARN_INTERVAL_MS,
@@ -1793,6 +1913,10 @@ function coinsPublicState(acc, ident) {
     coins: Math.max(0, Math.floor(Number(acc.coins) || 0)),
     ownedCapes: Array.isArray(acc.ownedCapes) ? acc.ownedCapes.slice() : [],
     ownedSeals: Array.isArray(acc.ownedSeals) ? acc.ownedSeals.slice() : [],
+    // Selos EXCLUSIVOS (só por código): catálogo próprio p/ UI (arte) + o que a
+    // conta já possui. Fora de prices.seals de propósito (não estão à venda).
+    exclusiveSeals: coinsExclusiveSeals(),
+    ownedSealsExclusive: (Array.isArray(acc.ownedSeals) ? acc.ownedSeals : []).filter((id) => !!COIN_SEAL_EXCLUSIVE[id]),
     earn: {
       lastEarnAt: ledger.lastEarnAt || 0,
       nextInMs: proximo,
@@ -1822,6 +1946,39 @@ function coinsCreditRedeem(ident, amount, code) {
     acc.updatedAt = Date.now();
     writeCoins(dados);
     return { credited: premio, coins: acc.coins };
+  });
+}
+
+/**
+ * Concede um selo EXCLUSIVO na CONTA (ownedSeals do data/coins.json) — chamado
+ * pelo POST /api/redeem quando o código premiado traz `seal`. Idempotente: se a
+ * conta já tem o selo, não duplica (already: true). SEM identidade não concede
+ * nada (o resgate de código de selo exige conta). Escrita atômica via
+ * writeCoins; fila withCoinsLock (nada de corrida com earn/spend/redeem).
+ */
+function coinsGrantSeal(ident, sealId, code) {
+  const id = String(sealId || '').trim().toLowerCase();
+  if (!ident || !ident.key || !COIN_SEAL_EXCLUSIVE[id]) {
+    return Promise.resolve({ granted: false, already: false });
+  }
+  return withCoinsLock(() => {
+    const dados = readCoins();
+    const acc = coinsEnsureAccount(dados, ident);
+    coinsNoteSource(acc, ident);
+    if (!Array.isArray(acc.ownedSeals)) acc.ownedSeals = [];
+    if (!acc.ledger || typeof acc.ledger !== 'object') acc.ledger = coinsNewLedger();
+    if (!Array.isArray(acc.ledger.items)) acc.ledger.items = [];
+    const jaTinha = acc.ownedSeals.includes(id);
+    if (!jaTinha) {
+      acc.ownedSeals.push(id);
+      if (acc.ownedSeals.length > COINS_MAX_ITEMS) acc.ownedSeals.splice(0, acc.ownedSeals.length - COINS_MAX_ITEMS);
+      // Registro no ledger (price 0: selo de código NÃO é compra — não mexe em spent).
+      acc.ledger.items.push({ item: id, tipo: 'seal', price: 0, at: Date.now() });
+      if (acc.ledger.items.length > COINS_MAX_ITEMS) acc.ledger.items.splice(0, acc.ledger.items.length - COINS_MAX_ITEMS);
+    }
+    acc.updatedAt = Date.now();
+    writeCoins(dados);
+    return { granted: !jaTinha, already: jaTinha, seal: id, ownedSeals: acc.ownedSeals.slice() };
   });
 }
 
@@ -1937,6 +2094,17 @@ app.post('/api/coins/spend', (req, res) => {
     if (tipo !== 'cape' && tipo !== 'seal') {
       return res.status(400).json({ ok: false, error: 'invalid_tipo' });
     }
+    // Selo EXCLUSIVO de código (ex.: beta_test): NUNCA está à venda. A resposta é
+    // explícita e nada é debitado (nem cai no 'unknown_item' genérico).
+    if (tipo === 'seal' && COIN_SEAL_EXCLUSIVE[item]) {
+      return res.status(400).json({
+        ok: false,
+        error: 'not_for_sale',
+        item,
+        tipo,
+        message: 'Selo exclusivo de codigo: so sai por resgate.'
+      });
+    }
     const catalogo = tipo === 'cape' ? COIN_CAPE_PRICES : COIN_SEAL_PRICES;
     const price = catalogo[item];
     if (!Number.isFinite(price)) {
@@ -2050,6 +2218,14 @@ app.listen(PORT, () => {
   ensureData();
   social.ensure();
   writeCoins(readCoins()); // cria/valida data/coins.json (economia server-authoritative)
+  // SEMENTE IDEMPOTENTE dos 10 códigos do selo 'beta_test' (BTSRLY*): cria só os
+  // que faltam no manifest.codes — NUNCA sobrescreve (código já resgatado
+  // continua resgatado). Falha aqui não derruba o boot.
+  seedBetaTestCodes()
+    .then((r) => {
+      if (r && r.created && r.created.length) console.log('[seals] codigos BTSRLY criados no manifesto: ' + r.created.join(', '));
+    })
+    .catch((e) => { console.warn('[seals] seed BTSRLY falhou: ' + ((e && e.message) || e)); });
   try { readBans(); } catch (_) {} // cria/valida data/bans.json (lista negra)
   try {
     const wurl = guardWebhookUrl();
