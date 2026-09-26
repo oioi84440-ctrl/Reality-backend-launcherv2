@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.54",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.54/Reality.Client.Launcher.Setup.1.6.54.exe",
-  "notes": "1.6.44 — TOP TEMPO igual para todo mundo: cada launcher manda o total de uso, o servidor guarda o maior valor (com limite anti-trapaca) e todas as telas mostram os mesmos numeros, contando ao vivo. Nada se perde se o servidor cair.",
-  "sha256": "aead38497a122d0ea3ceb810b3c89230b0ef426986f594ceea9045963888b235",
-  "size": 134513586,
+  "latestVersion": "1.6.55",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.55/Reality.Client.Launcher.Setup.1.6.55.exe",
+  "notes": "1.6.55 — CORRECAO URGENTE: o jogo nao abria mais na 1.21 e 1.21.1 (conflito MoreCulling x Sodium); agora o launcher resolve automaticamente em todas as versoes.",
+  "sha256": "1664335de95678eb894659321738b9df5f1fc9523e93575125949a290418073c",
+  "size": 134515096,
   "mandatory": false,
   "platforms": {}
  },
