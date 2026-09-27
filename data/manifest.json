@@ -2,11 +2,11 @@
  "version": 1,
  "updatedAt": "2026-09-21T23:18:59.000Z",
  "launcher": {
-  "latestVersion": "1.6.60",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.60/Reality.Client.Launcher.Setup.1.6.60.exe",
-  "notes": "1.6.60 — CORRECAO URGENTE: o jogo nao abria mais na 1.21 e 1.21.1 (conflito MoreCulling x Sodium); agora o launcher resolve automaticamente em todas as versoes.",
-  "sha256": "18619a81922b740c3e5f0781a9015167a74c0f24f6c3a71b0a05b4b13cf4b505",
-  "size": 134567704,
+  "latestVersion": "1.6.61",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.61/Reality.Client.Launcher.Setup.1.6.61.exe",
+  "notes": "1.6.61 — CORRECAO URGENTE: o jogo nao abria mais na 1.21 e 1.21.1 (conflito MoreCulling x Sodium); agora o launcher resolve automaticamente em todas as versoes.",
+  "sha256": "7b723dc12fdaf6c0724e56bb820c16f83249bb0c9643b0c853816ff2b54bc964",
+  "size": 134538603,
   "mandatory": false,
   "platforms": {}
  },
