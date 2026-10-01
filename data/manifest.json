@@ -2,11 +2,11 @@
  "version": 3,
  "updatedAt": "2026-09-28T15:59:38.580Z",
  "launcher": {
-  "latestVersion": "1.6.72",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.72/Reality.Client.Launcher.Setup.1.6.72.exe",
-  "notes": "1.6.72 — o Mercado saiu do launcher (as moedas continuam e agora ficam na tela inicial, com o tempo de uso rendendo +5 a cada 5 min), a lista de quem esta usando o launcher voltou pra coluna da home (nick + avatar, ao vivo) e chegam para valer o ban por HWID (placa-mae) e o TOP TEMPO a prova de trapaca.",
-  "sha256": "670ace7ac0691e14a95e730be1f5bde41e5a638c9a66dded544703df3de750d4",
-  "size": 153126386,
+  "latestVersion": "1.6.73",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.73/Reality.Client.Launcher.Setup.1.6.73.exe",
+  "notes": "1.6.73 — seguranca de dispositivo v2: o ban por placa-mae agora casa pelo CONJUNTO de sinais de hardware (SMBIOS, placa, BIOS, discos, MachineGuid) e vem assinado com HMAC, entao pega o mesmo PC mesmo trocando uma peca; o servidor tambem acusa quando varias contas entram pelo mesmo hardware. As moedas na home, a lista de quem esta usando o launcher e o ban por HWID continuam iguais.",
+  "sha256": "49eeccfaa0ddb4aa1b089f27fce9cb78060f0eee02019f9cbc01618d6437a693",
+  "size": 153128285,
   "mandatory": false,
   "platforms": {}
  },
