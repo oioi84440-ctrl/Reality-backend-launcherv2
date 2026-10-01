@@ -9,6 +9,10 @@
  *   PORT=3000
  *   ADMIN_TOKEN=troque-isso   (obrigatório pra POST /api/admin/*; use um segredo forte)
  *   CORS_ORIGINS=https://painel.exemplo.com (opcional, separado por vírgula)
+ *   DEVICE_HMAC_SECRET=...        (verifica X-Reality-Device-Sig; sem ele = so registra)
+ *   HWID_ACCT_ANOMALY_MIN=5       (contas distintas em 24h no mesmo HWID => anomalia+webhook)
+ *   HWID_AUTOBAN_MIN_ACCOUNTS=0   (0 = DESLIGADO; N = auto-ban do HWID ao passar N contas)
+ *   HWID_IP_ANOMALY_MIN=25        (HWIDs distintos por IP/dia => anomalia + webhook)
  */
 
 const fs = require('fs');
@@ -16,6 +20,7 @@ const path = require('path');
 const express = require('express');
 const presence = require('./presence');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'troque-este-token';
@@ -210,13 +215,21 @@ function bansSanitizeEntry(bruto) {
   // hardware (SMBIOS UUID + serial da placa + serial do disco). NUNCA e o serial cru.
   const hwidBruto = String(bruto.hwid || '').trim().toLowerCase().slice(0, 64);
   const hwid = /^[a-f0-9]{16,64}$/.test(hwidBruto) ? hwidBruto : '';
+  // hwid2/comps (device v2): o CONJUNTO de sinais permite casar o ban com 1
+  // sinal trocado (placa nova, BIOS atualizada...). Nunca sao seriais crus.
+  const hwid2Bruto = String(bruto.hwid2 || '').trim().toLowerCase().slice(0, 64);
+  const hwid2 = /^[a-f0-9]{64}$/.test(hwid2Bruto) ? hwid2Bruto : '';
+  const compsBruto = Array.isArray(bruto.comps) ? bruto.comps : [];
+  const comps = compsBruto.map((c) => String(c || '').trim().toLowerCase()).filter((c) => DEVICE_COMP_RE.test(c)).slice(0, DEVICE_V2_MAX_COMPS);
   const reason = String(bruto.reason || 'banido').replace(/[\r\n\t]/g, ' ').trim().slice(0, 200) || 'banido';
   const at = Math.max(0, Math.floor(Number(bruto.at) || Date.now()));
-  if (!username && !uuidBruto && !hwid) return null;
+  if (!username && !uuidBruto && !hwid && !hwid2) return null;
   return {
     username,
     uuid: /^[0-9a-fA-F-]{32,36}$/.test(uuidBruto) ? normalizeUuid(uuidBruto) : '',
     hwid,
+    hwid2,
+    comps,
     reason,
     at
   };
@@ -277,6 +290,61 @@ function deviceFromRequest(req) {
   try { return String((req && req.headers && req.headers['x-reality-device']) || '').trim().toLowerCase().slice(0, 64); } catch (_) { return ''; }
 }
 
+// ---------- Device v2: HWID composto + componentes + assinatura (launcher 1.6.73+) ----------
+// O launcher NOVO manda, alem do X-Reality-Device (v1, mantido por compatibilidade
+// com 1.6.71/1.6.72 e com os bans ja aplicados):
+//   X-Reality-Device-V2    = hash composto (SMBIOS UUID + placa + BIOS + discos + MachineGuid)
+//   X-Reality-Device-Comps = "k:hash32,k:hash32,..." (hashes dos SINAIS de hardware)
+//   X-Reality-Device-Ts    = epoch ms
+//   X-Reality-Device-Sig   = HMAC-SHA256(segredo, v1|v2|comps|ts)
+// LIMITE HONESTO: a chave do HMAC vive no launcher, que e PUBLICO (o app.asar e
+// extraivel e o source ja circula). A assinatura e um SPEED BUMP contra forja
+// casual; a defesa REAL e server-side: ban por CONJUNTO de componentes (tolerando
+// 1 sinal trocado), mapa de device e anomalia de muitas contas no mesmo hardware.
+const DEVICE_HMAC_SECRET = String(process.env.DEVICE_HMAC_SECRET || '').trim();
+const DEVICE_TS_WINDOW_MS = 15 * 60 * 1000;
+const DEVICE_V2_MAX_COMPS = 12;
+const DEVICE_COMP_RE = /^[a-z0-9_]{1,12}:[a-f0-9]{32}$/;
+
+function devicePayloadFromRequest(req) {
+  try {
+    const h = (req && req.headers) || {};
+    const v1 = String(h['x-reality-device'] || '').trim().toLowerCase().slice(0, 64);
+    const v2 = String(h['x-reality-device-v2'] || '').trim().toLowerCase().slice(0, 64);
+    const compsBruto = String(h['x-reality-device-comps'] || '').trim().toLowerCase();
+    const ts = Math.floor(Number(h['x-reality-device-ts']) || 0);
+    const sig = String(h['x-reality-device-sig'] || '').trim().toLowerCase().slice(0, 64);
+    const comps = compsBruto.split(',').map((s) => s.trim()).filter((s) => DEVICE_COMP_RE.test(s)).slice(0, DEVICE_V2_MAX_COMPS);
+    const out = {
+      v1: /^[a-f0-9]{64}$/.test(v1) ? v1 : '',
+      v2: /^[a-f0-9]{64}$/.test(v2) ? v2 : '',
+      comps,
+      ts,
+      sig: /^[a-f0-9]{64}$/.test(sig) ? sig : '',
+      signed: false
+    };
+    if (DEVICE_HMAC_SECRET && out.v1 && out.sig && out.ts && Math.abs(Date.now() - out.ts) <= DEVICE_TS_WINDOW_MS) {
+      const msg = [out.v1, out.v2, out.comps.join(','), String(out.ts)].join('|');
+      const esperado = crypto.createHmac('sha256', DEVICE_HMAC_SECRET).update(msg).digest('hex');
+      try { out.signed = crypto.timingSafeEqual(Buffer.from(esperado, 'hex'), Buffer.from(out.sig, 'hex')); } catch (_) { out.signed = false; }
+    }
+    return out;
+  } catch (_) { return { v1: '', v2: '', comps: [], ts: 0, sig: '', signed: false }; }
+}
+
+/** Casa o CONJUNTO de componentes do cliente com o de um ban (tolera 1 sinal trocado). */
+function compsMatch(compsCliente, compsBan) {
+  try {
+    const a = Array.isArray(compsCliente) ? compsCliente : [];
+    const b = Array.isArray(compsBan) ? compsBan : [];
+    if (a.length < 2 || b.length < 2) return false;
+    const setB = new Set(b);
+    const comuns = a.filter((c) => setB.has(c)).length;
+    const menor = Math.min(a.length, b.length);
+    return comuns >= 2 && comuns * 2 >= menor; // metade do conjunto menor ou mais
+  } catch (_) { return false; }
+}
+
 /** Casa uma identidade ({ username?, uuid?, key?, hwid? }) contra a lista negra. */
 function banMatch(alvo) {
   try {
@@ -284,12 +352,19 @@ function banMatch(alvo) {
     const id = String((alvo && alvo.uuid) || '').trim();
     const chave = String((alvo && alvo.key) || '').trim().toLowerCase();
     const hw = String((alvo && alvo.hwid) || '').trim().toLowerCase();
+    const hw2 = String((alvo && alvo.hwid2) || '').trim().toLowerCase();
+    const compsAlvo = Array.isArray(alvo && alvo.comps) ? alvo.comps : [];
     for (const b of readBans().bans) {
       if (b.username && nick && b.username.toLowerCase() === nick) return Object.assign({}, b, { matched: 'username' });
       if (b.uuid && id && bansUuidEq(b.uuid, id)) return Object.assign({}, b, { matched: 'uuid' });
       if (b.uuid && chave && chave === 'offline:' + normalizeUuid(b.uuid).toLowerCase()) return Object.assign({}, b, { matched: 'uuid' });
-      // Ban por HWID (placa-mae): vale mesmo com nick/uuid novos. Só compara hash completo.
+      // Ban por HWID (placa-mae): v1 exato = o caso normal; v2 e o CONJUNTO de
+      // componentes cobrem hardware parcialmente alterado (1 sinal trocado).
       if (b.hwid && /^[a-f0-9]{16,64}$/.test(hw) && b.hwid === hw) return Object.assign({}, b, { matched: 'hwid' });
+      if (b.hwid2 && /^[a-f0-9]{64}$/.test(hw2) && b.hwid2 === hw2) return Object.assign({}, b, { matched: 'hwid2' });
+      if (Array.isArray(b.comps) && b.comps.length >= 2 && compsAlvo.length >= 2 && compsMatch(compsAlvo, b.comps)) {
+        return Object.assign({}, b, { matched: 'hwid-partial' });
+      }
     }
   } catch (_) { /* lista indisponível nunca libera nem derruba: sem match */ }
   return null;
@@ -321,6 +396,7 @@ function banNotifyHwidHit(ban, info) {
           { name: 'Jogador', value: '`' + nome + '`', inline: true },
           { name: 'UUID', value: '`' + uuid + '`', inline: true },
           { name: 'HWID', value: '`' + hwid.slice(0, 24) + '…`', inline: true },
+          { name: 'Como casou', value: '`' + String((ban && ban.matched) || 'hwid') + '`', inline: true },
           { name: 'Motivo do ban', value: String((ban && ban.reason) || 'banido').slice(0, 180), inline: false },
           { name: 'Horário (Brasília)', value: guardBrasiliaTime(agora), inline: true }
         ],
@@ -333,6 +409,9 @@ function banNotifyHwidHit(ban, info) {
 function banPublicEntry(b) {
   const out = { username: (b && b.username) || '', uuid: (b && b.uuid) || '', reason: (b && b.reason) || 'banido', at: (b && b.at) || 0 };
   if (b && b.hwid) out.hwid = b.hwid; // hash, nunca o serial cru
+  // Como o match aconteceu (username/uuid/hwid/hwid2/hwid-partial) — visível só
+  // nas respostas 403 de bloqueio; a LISTA pública continua sem esse campo.
+  if (b && b.matched) out.matched = String(b.matched);
   return out;
 }
 
@@ -341,7 +420,7 @@ function banBlockBody(ban) {
     ok: false,
     error: 'banned',
     message: 'Voce foi banido - fraude/uso de cheats - fale no Discord.',
-    ban: banPublicEntry(ban)
+    ban: Object.assign(banPublicEntry(ban), (ban && ban.matched) ? { matched: String(ban.matched) } : {})
   };
 }
 
@@ -359,11 +438,14 @@ function banIdentityFromCoins(ident) {
 /** Checa a lista negra pro request: identidade resolvida + username/uuid/hwid do corpo/headers. */
 function banCheckRequest(req, ident) {
   try {
-    const hwidReq = deviceFromRequest(req);
+    const dev = devicePayloadFromRequest(req);
+    const hwidReq = dev.v1;
     const alvos = [];
     const doIdent = banIdentityFromCoins(ident);
     if (doIdent) {
       doIdent.hwid = hwidReq;
+      doIdent.hwid2 = dev.v2;
+      doIdent.comps = dev.comps;
       if (doIdent.username || doIdent.uuid || hwidReq) alvos.push(doIdent);
     }
     const body = (req && req.body) || {};
@@ -371,7 +453,7 @@ function banCheckRequest(req, ident) {
     const uuid = String(body.uuid || req.headers['x-reality-uuid'] || '').trim();
     const hwidBody = String(body.hwid || hwidReq || '').trim();
     if (username || uuid || hwidBody) {
-      alvos.push({ username, uuid, hwid: hwidBody, key: uuid ? 'offline:' + normalizeUuid(uuid).toLowerCase() : '' });
+      alvos.push({ username, uuid, hwid: hwidBody, hwid2: dev.v2, comps: dev.comps, key: uuid ? 'offline:' + normalizeUuid(uuid).toLowerCase() : '' });
     }
     for (const alvo of alvos) {
       const banido = banMatch(alvo);
@@ -1205,7 +1287,7 @@ app.post('/api/admin/launcher', requireAdmin, (req, res) => {
 app.get('/api/admin/bans', requireAdmin, (_req, res) => {
   try {
     const dados = readBans(true);
-    res.json({ ok: true, version: dados.version, updatedAt: dados.updatedAt, count: dados.bans.length, bans: dados.bans.map(banPublicEntry) });
+    res.json({ ok: true, version: dados.version, updatedAt: dados.updatedAt, count: dados.bans.length, bans: dados.bans.map((b) => Object.assign(banPublicEntry(b), { hwid2: b.hwid2 || '', comps: Array.isArray(b.comps) ? b.comps : [] })) });
   } catch (_) {
     try { res.status(500).json({ ok: false, error: 'bans_read_failed' }); } catch (_2) {}
   }
@@ -1223,13 +1305,28 @@ app.post('/api/admin/bans', requireAdmin, (req, res) => {
     for (const bruto of entradas.slice(0, 500)) {
       const limpo = bansSanitizeEntry(bruto);
       if (!limpo) continue;
+      // Enriquecimento: ban por hwid aproveita o hwid-map para guardar o CONJUNTO
+      // de sinais (hwid2/comps) — sem isso o ban so vale pelo hash v1 exato.
+      if (limpo.hwid && !(limpo.comps && limpo.comps.length)) {
+        try {
+          const e = hwidMapLoad()[limpo.hwid];
+          if (e && typeof e === 'object') {
+            if (!limpo.hwid2 && /^[a-f0-9]{64}$/.test(String(e.hwid2 || ''))) limpo.hwid2 = String(e.hwid2);
+            if (Array.isArray(e.comps) && e.comps.length) limpo.comps = e.comps.filter((c) => DEVICE_COMP_RE.test(String(c))).slice(0, DEVICE_V2_MAX_COMPS);
+          }
+        } catch (_) {}
+      }
       const i = lista.findIndex((b) => (
         (limpo.username && b.username && b.username.toLowerCase() === limpo.username.toLowerCase()) ||
         (limpo.uuid && b.uuid && bansUuidEq(b.uuid, limpo.uuid)) ||
-        (limpo.hwid && b.hwid && b.hwid === limpo.hwid)
+        (limpo.hwid && b.hwid && b.hwid === limpo.hwid) ||
+        (limpo.hwid2 && b.hwid2 && b.hwid2 === limpo.hwid2)
       ));
       if (i >= 0) {
-        lista[i] = { ...lista[i], ...limpo };
+        const fundido = { ...lista[i], ...limpo };
+        fundido.hwid2 = limpo.hwid2 || lista[i].hwid2 || '';
+        fundido.comps = (limpo.comps && limpo.comps.length) ? limpo.comps : (Array.isArray(lista[i].comps) ? lista[i].comps : []);
+        lista[i] = fundido;
         atualizados += 1;
       } else {
         lista.push(limpo);
@@ -1282,6 +1379,7 @@ app.delete('/api/admin/bans', requireAdmin, (req, res) => {
       if (username && b.username && b.username.toLowerCase() === username) return false;
       if (uuid && b.uuid && bansUuidEq(b.uuid, uuid)) return false;
       if (hwid && b.hwid && b.hwid === hwid) return false;
+      if (hwid && b.hwid2 && b.hwid2 === hwid) return false;
       return true;
     });
     const proximo = writeBansFile({
@@ -1571,10 +1669,160 @@ function hwidMapFlush() {
 }
 setInterval(hwidMapFlush, 30000).unref();
 
-/** Registra o device do request no mapa (best-effort, nunca lança). */
+// ---------- Anomalias de device (evasao por hardware) ----------
+// - Muitas CONTAS no mesmo HWID em 24h => anomalia + webhook (auto-ban OPCIONAL).
+// - Muitos HWIDs distintos no mesmo IP no mesmo dia => anomalia + webhook.
+// Registro: <data>/device-anomalies.json (capped). Auto-ban desligado por padrao
+// (HWID_AUTOBAN_MIN_ACCOUNTS=0) — ligue com cautela (PC compartilhado em casa).
+const DEVICE_ANOMALY_FILE = path.join(DATA_DIR, 'device-anomalies.json');
+const DEVICE_ANOMALY_MAX = 500;
+const DEVICE_ACCT_WINDOW_MS = Math.max(60 * 60 * 1000, Math.floor(Number(process.env.HWID_ACCT_WINDOW_MS) || 24 * 60 * 60 * 1000));
+const DEVICE_ACCT_ANOMALY_MIN = Math.max(2, Math.floor(Number(process.env.HWID_ACCT_ANOMALY_MIN) || 5));
+const DEVICE_AUTOBAN_MIN = Math.max(0, Math.floor(Number(process.env.HWID_AUTOBAN_MIN_ACCOUNTS) || 0));
+const DEVICE_ANOM_DEDUPE_MS = 6 * 60 * 60 * 1000;
+const IP_DEVICE_ANOMALY_MIN = Math.max(3, Math.floor(Number(process.env.HWID_IP_ANOMALY_MIN) || 25));
+const deviceAnomDedupe = new Map(); // hwid -> ultimo aviso (ms)
+let ipDevicesDia = { dia: '', porIp: new Map() }; // ip -> Set(hwid)
+const ipAnomDedupe = new Map();     // ip|dia -> ultimo aviso (ms)
+
+function deviceAnomalyAppend(registro) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    let lista = [];
+    try {
+      if (fs.existsSync(DEVICE_ANOMALY_FILE)) {
+        const b = JSON.parse(fs.readFileSync(DEVICE_ANOMALY_FILE, 'utf-8'));
+        if (Array.isArray(b)) lista = b;
+      }
+    } catch (_) { lista = []; }
+    lista.unshift(registro);
+    const tempFile = DEVICE_ANOMALY_FILE + '.tmp';
+    fs.writeFileSync(tempFile, JSON.stringify(lista.slice(0, DEVICE_ANOMALY_MAX), null, 2), 'utf-8');
+    fs.renameSync(tempFile, DEVICE_ANOMALY_FILE);
+    return true;
+  } catch (_) { return false; }
+}
+
+function deviceAnomalyNotify(titulo, campos, rodape) {
+  try {
+    const url = guardWebhookUrl();
+    if (!url) return;
+    guardWebhookPost(url, {
+      username: 'Reality Guard',
+      embeds: [{
+        title: titulo,
+        color: 0xE67E22,
+        fields: campos.slice(0, 8),
+        footer: { text: String(rodape || 'device-anomalies').slice(0, 180) }
+      }]
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+/** Auto-ban OPCIONAL do device (ligado por HWID_AUTOBAN_MIN_ACCOUNTS>0). */
+function deviceAutoBan(hwid, e, contas) {
+  try {
+    const bans = readBans(true);
+    if (bans.bans.some((b) => b.hwid === hwid)) return false;
+    const limpo = bansSanitizeEntry({
+      hwid,
+      hwid2: String((e && e.hwid2) || ''),
+      comps: Array.isArray(e && e.comps) ? e.comps : [],
+      reason: 'auto: ' + contas + ' contas no mesmo hardware (possivel evasao)',
+      at: Date.now()
+    });
+    if (!limpo) return false;
+    const lista = bans.bans.concat([limpo]).slice(0, BANS_MAX_ENTRIES);
+    writeBansFile({
+      version: Math.max(1, Math.floor(Number(bans.version) || 1)) + 1,
+      updatedAt: new Date().toISOString(),
+      bans: lista
+    });
+    deviceAnomalyNotify('⛔ AUTO-BAN por hardware (muitas contas)', [
+      { name: 'Contas/24h', value: String(contas), inline: true },
+      { name: 'HWID', value: '`' + String(hwid).slice(0, 24) + '…`', inline: true },
+      { name: 'Motivo', value: 'auto: ' + contas + ' contas no mesmo hardware', inline: false }
+    ], 'HWID_AUTOBAN_MIN_ACCOUNTS=' + DEVICE_AUTOBAN_MIN + ' (data/bans.json)');
+    return true;
+  } catch (_) { return false; }
+}
+
+function deviceCheckAnomaly(hwid, e, req) {
+  try {
+    const agora = Date.now();
+    const ip = String(clientKey(req) || '').slice(0, 64);
+    // 1) muitas contas no mesmo hwid
+    const janela = agora - DEVICE_ACCT_WINDOW_MS;
+    let contas = 0;
+    try {
+      for (const info of Object.values(e.accts || {})) {
+        if (info && (Number(info.at) || 0) >= janela) contas += 1;
+      }
+    } catch (_) {}
+    e.acctsJanela = contas;
+    if (contas >= DEVICE_ACCT_ANOMALY_MIN) {
+      const auto = DEVICE_AUTOBAN_MIN > 0 && contas >= DEVICE_AUTOBAN_MIN;
+      const ultimo = deviceAnomDedupe.get(hwid) || 0;
+      if (agora - ultimo >= DEVICE_ANOM_DEDUPE_MS) {
+        deviceAnomDedupe.set(hwid, agora);
+        if (deviceAnomDedupe.size > 1000) {
+          for (const [k, t] of deviceAnomDedupe) { if (agora - t > DEVICE_ANOM_DEDUPE_MS) deviceAnomDedupe.delete(k); }
+        }
+        deviceAnomalyAppend({
+          at: agora,
+          kind: 'device_multi_account',
+          hwid,
+          hwid2: String(e.hwid2 || ''),
+          contas,
+          names: (Array.isArray(e.names) ? e.names : []).slice(-8),
+          uuids: (Array.isArray(e.uuids) ? e.uuids : []).slice(-8),
+          ip,
+          signed: !!e.signedAt,
+          autoban: auto
+        });
+        deviceAnomalyNotify('🧩 MESMO HARDWARE com muitas contas', [
+          { name: 'Contas na janela', value: String(contas), inline: true },
+          { name: 'HWID', value: '`' + hwid.slice(0, 24) + '…`', inline: true },
+          { name: 'Assinado', value: (e.signedAt ? 'sim' : 'nao'), inline: true },
+          { name: 'Nicks', value: '`' + ((Array.isArray(e.names) ? e.names.slice(-8).join('`, `') : '') || '-').slice(0, 300) + '`', inline: false },
+          { name: 'UUIDs', value: '`' + ((Array.isArray(e.uuids) ? e.uuids.slice(-6).join('`, `') : '') || '-').slice(0, 300) + '`', inline: false }
+        ], 'hwid-map — data/device-anomalies.json (janela ' + Math.round(DEVICE_ACCT_WINDOW_MS / 3600000) + 'h)');
+      }
+      if (auto) deviceAutoBan(hwid, e, contas);
+    }
+    // 2) muitos hwids no mesmo IP no dia (rede compartilhada / raide de contas)
+    try {
+      const dia = new Date(agora).toISOString().slice(0, 10);
+      if (ipDevicesDia.dia !== dia) ipDevicesDia = { dia, porIp: new Map() };
+      if (ip) {
+        let set = ipDevicesDia.porIp.get(ip);
+        if (!set) { set = new Set(); ipDevicesDia.porIp.set(ip, set); }
+        set.add(hwid);
+        if (set.size >= IP_DEVICE_ANOMALY_MIN) {
+          const chave = ip + '|' + dia;
+          if (agora - (ipAnomDedupe.get(chave) || 0) >= DEVICE_ANOM_DEDUPE_MS) {
+            ipAnomDedupe.set(chave, agora);
+            if (ipAnomDedupe.size > 2000) {
+              for (const [k, t] of ipAnomDedupe) { if (agora - t > DEVICE_ANOM_DEDUPE_MS) ipAnomDedupe.delete(k); }
+            }
+            deviceAnomalyAppend({ at: agora, kind: 'ip_multi_device', ip, hwids: set.size });
+            deviceAnomalyNotify('🌐 Muitos devices no mesmo IP (hoje)', [
+              { name: 'HWIDs hoje', value: String(set.size), inline: true },
+              { name: 'IP', value: '`' + ip.slice(0, 48) + '`', inline: true }
+            ], 'limite HWID_IP_ANOMALY_MIN=' + IP_DEVICE_ANOMALY_MIN);
+          }
+        }
+        if (ipDevicesDia.porIp.size > 5000) ipDevicesDia.porIp.clear(); // defensivo
+      }
+    } catch (_) {}
+  } catch (_) {}
+}
+
+/** Registra o device do request no mapa (best-effort, nunca lanca). */
 function trackDevice(req, name, uuid) {
   try {
-    const hwid = deviceFromRequest(req);
+    const dev = devicePayloadFromRequest(req);
+    const hwid = dev.v1;
     if (!/^[a-f0-9]{64}$/.test(hwid)) return false; // so o HWID de hardware entra
     const nome = String(name || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 16);
     const id = String(uuid || '').trim().toLowerCase().slice(0, 40);
@@ -1582,10 +1830,28 @@ function trackDevice(req, name, uuid) {
     const agora = Date.now();
     const e = dados[hwid] && typeof dados[hwid] === 'object' ? dados[hwid] : { firstSeen: agora, names: [], uuids: [] };
     e.lastSeen = agora;
+    if (dev.v2) e.hwid2 = dev.v2;
+    if (dev.signed) e.signedAt = agora;
+    if (Array.isArray(dev.comps) && dev.comps.length) {
+      const set = new Set(Array.isArray(e.comps) ? e.comps : []);
+      for (const c of dev.comps) set.add(c);
+      e.comps = Array.from(set).slice(-DEVICE_V2_MAX_COMPS);
+    }
     if (!Array.isArray(e.names)) e.names = [];
     if (!Array.isArray(e.uuids)) e.uuids = [];
     if (nome && !e.names.includes(nome)) { e.names.push(nome); if (e.names.length > HWID_MAP_HISTORY) e.names.shift(); }
     if (id && !e.uuids.includes(id)) { e.uuids.push(id); if (e.uuids.length > HWID_MAP_HISTORY) e.uuids.shift(); }
+    // Contas do device na janela (base da anomalia "muitas contas no mesmo hwid").
+    if (!e.accts || typeof e.accts !== 'object') e.accts = {};
+    const chaveAcct = id || (nome ? 'name:' + nome.toLowerCase() : '');
+    if (chaveAcct) {
+      e.accts[chaveAcct] = { n: nome || '', at: agora };
+      const chavesAcct = Object.keys(e.accts);
+      if (chavesAcct.length > 60) {
+        chavesAcct.sort((x, y) => (e.accts[y].at || 0) - (e.accts[x].at || 0)).slice(60).forEach((k) => delete e.accts[k]);
+      }
+    }
+    deviceCheckAnomaly(hwid, e, req);
     dados[hwid] = e;
     const chaves = Object.keys(dados);
     if (chaves.length > HWID_MAP_MAX) {
@@ -1602,19 +1868,44 @@ app.get('/api/admin/hwid-map', requireAdmin, (req, res) => {
     hwidMapFlush();
     const dados = hwidMapLoad();
     const qHwid = String(req.query.hwid || '').trim().toLowerCase();
+    const qHwid2 = String(req.query.hwid2 || '').trim().toLowerCase();
     const qUuid = String(req.query.uuid || '').trim().toLowerCase();
     const qName = String(req.query.name || '').trim().toLowerCase();
     const lista = [];
     for (const [hwid, info] of Object.entries(dados)) {
       if (qHwid && hwid !== qHwid) continue;
+      if (qHwid2 && String(info.hwid2 || '').toLowerCase() !== qHwid2) continue;
       if (qUuid && !(Array.isArray(info.uuids) && info.uuids.some((u) => String(u).toLowerCase().includes(qUuid)))) continue;
       if (qName && !(Array.isArray(info.names) && info.names.some((n) => String(n).toLowerCase() === qName))) continue;
-      lista.push({ hwid, firstSeen: info.firstSeen || 0, lastSeen: info.lastSeen || 0, names: info.names || [], uuids: info.uuids || [] });
+      lista.push({
+        hwid,
+        hwid2: String(info.hwid2 || ''),
+        comps: Array.isArray(info.comps) ? info.comps : [],
+        signed: !!info.signedAt,
+        contasJanela: Math.max(0, Math.floor(Number(info.acctsJanela) || 0)),
+        contasTotal: (info.accts && typeof info.accts === 'object') ? Object.keys(info.accts).length : 0,
+        firstSeen: info.firstSeen || 0,
+        lastSeen: info.lastSeen || 0,
+        names: info.names || [],
+        uuids: info.uuids || []
+      });
     }
     lista.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     res.json({ ok: true, count: lista.length, entries: lista.slice(0, 200) });
   } catch (_) {
     try { res.status(500).json({ ok: false, error: 'hwid_map_read_failed' }); } catch (_2) {}
+  }
+});
+
+/** GET /api/admin/device-anomalies — ultimas anomalias de device (arquivo). */
+app.get('/api/admin/device-anomalies', requireAdmin, (req, res) => {
+  try {
+    let lista = [];
+    try { if (fs.existsSync(DEVICE_ANOMALY_FILE)) { const b = JSON.parse(fs.readFileSync(DEVICE_ANOMALY_FILE, 'utf-8')); if (Array.isArray(b)) lista = b; } } catch (_) { lista = []; }
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '80', 10) || 80));
+    res.json({ ok: true, count: lista.length, anomalies: lista.slice(0, limit) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'device_anomalies_read_failed' }); } catch (_2) {}
   }
 });
 
