@@ -1,12 +1,12 @@
 {
- "version": 1,
- "updatedAt": "2026-09-21T23:18:59.000Z",
+ "version": 3,
+ "updatedAt": "2026-09-28T15:59:38.580Z",
  "launcher": {
-  "latestVersion": "1.6.62",
-  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.62/Reality.Client.Launcher.Setup.1.6.62.exe",
-  "notes": "1.6.62 — CORRECAO URGENTE: o jogo nao abria mais na 1.21 e 1.21.1 (conflito MoreCulling x Sodium); agora o launcher resolve automaticamente em todas as versoes.",
-  "sha256": "a1c80ae8475443cf9f3f66848b02292f7413ed3f20fdbd3760db280f54a00e3b",
-  "size": 134537521,
+  "latestVersion": "1.6.72",
+  "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.72/Reality.Client.Launcher.Setup.1.6.72.exe",
+  "notes": "1.6.72 — o Mercado saiu do launcher (as moedas continuam e agora ficam na tela inicial, com o tempo de uso rendendo +5 a cada 5 min), a lista de quem esta usando o launcher voltou pra coluna da home (nick + avatar, ao vivo) e chegam para valer o ban por HWID (placa-mae) e o TOP TEMPO a prova de trapaca.",
+  "sha256": "670ace7ac0691e14a95e730be1f5bde41e5a638c9a66dded544703df3de750d4",
+  "size": 153126386,
   "mandatory": false,
   "platforms": {}
  },
@@ -38,7 +38,12 @@
    "badge": "Membro do Reality",
    "cape": "reality_bolt.png",
    "role": "Membro do Reality",
-   "usesLeft": null
+   "usesLeft": null,
+   "redeemedBy": [
+    "4a15c66331a1bdbb43b660e657532aa906ee8f83695b2cb6199e3d68347af318",
+    "cba98284b9bac2b08d81995f31d7a74c6c9e488715794214d1912d73c248e1fc",
+    "acct:u_8eb7f08136675cef"
+   ]
   },
   "RLTY-3247-3287-MUNDOMC": {
    "visual": null,
@@ -69,8 +74,244 @@
    "badge": "ඞ Kowa KowaMC",
    "cape": null,
    "role": "Kowa KowaMC",
+   "usesLeft": 0,
+   "redeemedBy": [
+    "6592c9a0474941bfcfee1f1eed0fa5c369670d38d20a8e13843e507c8c982a8d"
+   ]
+  },
+  "BTSRLY10": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY12": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY50": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY42": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY67": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY2001": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY302": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY163": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY0725": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "BTSRLY5427": {
+   "visual": null,
+   "badge": "Beta Test",
+   "cape": null,
+   "role": "Beta Test",
+   "displayName": null,
+   "seal": "beta_test",
+   "usesLeft": 1,
+   "redeemedBy": [],
+   "capeId": "capa_beta_test"
+  },
+  "RLTYRED01": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
    "usesLeft": 1,
    "redeemedBy": []
+  },
+  "RLTYRED02": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED03": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED04": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED05": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED06": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED07": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED08": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED09": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYRED10": {
+   "visual": null,
+   "badge": "Reality Client",
+   "cape": null,
+   "capeId": "capa_reality_display",
+   "role": "Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 1,
+   "redeemedBy": []
+  },
+  "RLTYPINDOWN": {
+   "visual": null,
+   "badge": "Dono do Reality",
+   "cape": null,
+   "capeId": "capa_pindown_cat",
+   "role": "Dono do Reality Client",
+   "displayName": null,
+   "seal": null,
+   "usesLeft": 0,
+   "redeemedBy": [
+    "381abb43092800d8121f1969b6cab0d472057ecff2f7e89cc8a7944d997d746f",
+    "k:offline:53e9764f-4ccc-4913-88df-04437bbb9571"
+   ]
   }
  }
 }
