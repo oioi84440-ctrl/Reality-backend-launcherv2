@@ -181,9 +181,12 @@ function requireAdmin(req, res, next) {
 }
 
 // ---------- Lista negra (bans) — genérica, editável sem deploy ----------
-// Fonte: <data>/bans.json = { version, updatedAt, bans: [ { username?, uuid?, reason?, at? } ] }
+// Fonte: <data>/bans.json = { version, updatedAt, bans: [ { username?, uuid?, hwid?, reason?, at? } ] }
 //   - username casa a conta (offline OU social) pelo NICK, sem diferenciar maiúsculas;
 //   - uuid casa a conta offline pelo UUID canônico (com ou sem hífens);
+//   - hwid casa o HARDWARE (hash sha256 de SMBIOS UUID + serial da placa + serial do
+//     disco, calculado no launcher e enviado em X-Reality-Device): vale mesmo com
+//     nick novo, conta nova e .reality apagada;
 //   - reason é o motivo mostrado ao jogador e no webhook do Guard.
 // Público: GET /api/bans entrega SÓ a lista (nick/uuid/motivo) — o launcher usa
 // pra bloquear o launch e mostrar o aviso. Nada sensível mora aqui.
@@ -203,12 +206,17 @@ function bansSanitizeEntry(bruto) {
   if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return null;
   const username = String(bruto.username || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 32);
   const uuidBruto = String(bruto.uuid || '').trim().slice(0, 64);
+  // HWID (ban por placa-mae): hash sha256 (64 hex) calculado no launcher em cima do
+  // hardware (SMBIOS UUID + serial da placa + serial do disco). NUNCA e o serial cru.
+  const hwidBruto = String(bruto.hwid || '').trim().toLowerCase().slice(0, 64);
+  const hwid = /^[a-f0-9]{16,64}$/.test(hwidBruto) ? hwidBruto : '';
   const reason = String(bruto.reason || 'banido').replace(/[\r\n\t]/g, ' ').trim().slice(0, 200) || 'banido';
   const at = Math.max(0, Math.floor(Number(bruto.at) || Date.now()));
-  if (!username && !uuidBruto) return null;
+  if (!username && !uuidBruto && !hwid) return null;
   return {
     username,
     uuid: /^[0-9a-fA-F-]{32,36}$/.test(uuidBruto) ? normalizeUuid(uuidBruto) : '',
+    hwid,
     reason,
     at
   };
@@ -264,23 +272,68 @@ function bansUuidEq(a, b) {
   return na.length === 32 && nb.length === 32 && na === nb;
 }
 
-/** Casa uma identidade ({ username?, uuid?, key? }) contra a lista negra. */
+/** HWID do request (X-Reality-Device do launcher; sha256 hex = 64 chars). */
+function deviceFromRequest(req) {
+  try { return String((req && req.headers && req.headers['x-reality-device']) || '').trim().toLowerCase().slice(0, 64); } catch (_) { return ''; }
+}
+
+/** Casa uma identidade ({ username?, uuid?, key?, hwid? }) contra a lista negra. */
 function banMatch(alvo) {
   try {
     const nick = String((alvo && alvo.username) || '').trim().toLowerCase();
     const id = String((alvo && alvo.uuid) || '').trim();
     const chave = String((alvo && alvo.key) || '').trim().toLowerCase();
+    const hw = String((alvo && alvo.hwid) || '').trim().toLowerCase();
     for (const b of readBans().bans) {
       if (b.username && nick && b.username.toLowerCase() === nick) return Object.assign({}, b, { matched: 'username' });
       if (b.uuid && id && bansUuidEq(b.uuid, id)) return Object.assign({}, b, { matched: 'uuid' });
       if (b.uuid && chave && chave === 'offline:' + normalizeUuid(b.uuid).toLowerCase()) return Object.assign({}, b, { matched: 'uuid' });
+      // Ban por HWID (placa-mae): vale mesmo com nick/uuid novos. Só compara hash completo.
+      if (b.hwid && /^[a-f0-9]{16,64}$/.test(hw) && b.hwid === hw) return Object.assign({}, b, { matched: 'hwid' });
     }
   } catch (_) { /* lista indisponível nunca libera nem derruba: sem match */ }
   return null;
 }
 
+// Aviso no webhook quando um HWID BANIDO aparece de novo (dedupe por hwid).
+const hwidHitDedupe = new Map(); // hwid -> último aviso (ms)
+const HWID_HIT_DEDUPE_MS = 10 * 60 * 1000;
+function banNotifyHwidHit(ban, info) {
+  try {
+    const hwid = String((ban && ban.hwid) || '');
+    if (!hwid) return;
+    const agora = Date.now();
+    if (agora - (hwidHitDedupe.get(hwid) || 0) < HWID_HIT_DEDUPE_MS) return;
+    hwidHitDedupe.set(hwid, agora);
+    if (hwidHitDedupe.size > 500) {
+      for (const [k, t] of hwidHitDedupe) { if (agora - t > HWID_HIT_DEDUPE_MS) hwidHitDedupe.delete(k); }
+    }
+    const url = guardWebhookUrl();
+    if (!url) return;
+    const nome = String((info && info.username) || '').slice(0, 32) || '(sem nick)';
+    const uuid = String((info && info.uuid) || '').slice(0, 40) || '(sem uuid)';
+    guardWebhookPost(url, {
+      username: 'Reality Guard',
+      embeds: [{
+        title: '🚫 HWID BANIDO tentou usar o launcher',
+        color: 0xB00020,
+        fields: [
+          { name: 'Jogador', value: '`' + nome + '`', inline: true },
+          { name: 'UUID', value: '`' + uuid + '`', inline: true },
+          { name: 'HWID', value: '`' + hwid.slice(0, 24) + '…`', inline: true },
+          { name: 'Motivo do ban', value: String((ban && ban.reason) || 'banido').slice(0, 180), inline: false },
+          { name: 'Horário (Brasília)', value: guardBrasiliaTime(agora), inline: true }
+        ],
+        footer: { text: 'ban por hardware (data/bans.json)' }
+      }]
+    }).catch(() => {});
+  } catch (_) { /* aviso nunca quebra a checagem */ }
+}
+
 function banPublicEntry(b) {
-  return { username: (b && b.username) || '', uuid: (b && b.uuid) || '', reason: (b && b.reason) || 'banido', at: (b && b.at) || 0 };
+  const out = { username: (b && b.username) || '', uuid: (b && b.uuid) || '', reason: (b && b.reason) || 'banido', at: (b && b.at) || 0 };
+  if (b && b.hwid) out.hwid = b.hwid; // hash, nunca o serial cru
+  return out;
 }
 
 function banBlockBody(ban) {
@@ -303,21 +356,29 @@ function banIdentityFromCoins(ident) {
   };
 }
 
-/** Checa a lista negra pro request: identidade resolvida + username/uuid do corpo. */
+/** Checa a lista negra pro request: identidade resolvida + username/uuid/hwid do corpo/headers. */
 function banCheckRequest(req, ident) {
   try {
+    const hwidReq = deviceFromRequest(req);
     const alvos = [];
     const doIdent = banIdentityFromCoins(ident);
-    if (doIdent && (doIdent.username || doIdent.uuid)) alvos.push(doIdent);
+    if (doIdent) {
+      doIdent.hwid = hwidReq;
+      if (doIdent.username || doIdent.uuid || hwidReq) alvos.push(doIdent);
+    }
     const body = (req && req.body) || {};
     const username = String(body.username || body.name || req.headers['x-reality-name'] || '').trim();
     const uuid = String(body.uuid || req.headers['x-reality-uuid'] || '').trim();
-    if (username || uuid) {
-      alvos.push({ username, uuid, key: uuid ? 'offline:' + normalizeUuid(uuid).toLowerCase() : '' });
+    const hwidBody = String(body.hwid || hwidReq || '').trim();
+    if (username || uuid || hwidBody) {
+      alvos.push({ username, uuid, hwid: hwidBody, key: uuid ? 'offline:' + normalizeUuid(uuid).toLowerCase() : '' });
     }
     for (const alvo of alvos) {
       const banido = banMatch(alvo);
-      if (banido) return banido;
+      if (banido) {
+        if (banido.matched === 'hwid') banNotifyHwidHit(banido, { username, uuid });
+        return banido;
+      }
     }
   } catch (_) {}
   return null;
@@ -406,6 +467,12 @@ app.post('/api/presence/heartbeat', (req, res) => {
     return res.status(400).json({ error: 'invalid_cape' });
   }
   const key = normalizeUuid(uuid);
+  // BAN: nick/uuid/HWID banido nao entra na presenca (nem renova lastSeen).
+  const banPresence = banCheckRequest(req, null);
+  if (banPresence) {
+    return res.status(403).json({ ok: false, error: 'banned', ban: banPublicEntry(banPresence) });
+  }
+  try { trackDevice(req, name, key); } catch (_) {}
   const prev = onlineRealityUsers.get(key) || {};
   onlineRealityUsers.set(key, {
     name: name || prev.name || '',
@@ -956,10 +1023,18 @@ app.post('/api/redeem', async (req, res) => {
         (entry.reward && typeof entry.reward === 'object' && entry.reward.seal) || entry.seal || ''
       ).trim().toLowerCase();
       const seloExclusivo = !!COIN_SEAL_EXCLUSIVE[sealPedido];
+      // CAPA EXCLUSIVA pedida por este código (ex.: capa_beta_test): a POSSE é
+      // gravada na CONTA (ownedCapes) — identificada AQUI, junto do selo, para
+      // valer a mesma ordem de checagens (dup da conta antes de estoque).
+      const capaPedida = /^[a-z0-9_]{3,40}$/.test(
+        String((entry.reward && typeof entry.reward === 'object' && entry.reward.capeId) || entry.capeId || '').trim()
+      ) ? String((entry.reward && entry.reward.capeId) || entry.capeId).trim() : null;
+      // Código que ENTREGA POSSE NA CONTA (selo e/ou capa) exige identidade.
+      const exigeConta = seloExclusivo || !!capaPedida;
       const contaKey = coinsIdentRedeem && coinsIdentRedeem.key ? String(coinsIdentRedeem.key) : null;
       // Chave de duplicidade da CONTA (social/id ou offline/uuid): o mesmo dono
-      // não leva o selo duas vezes nem trocando o nick do launcher.
-      const chaveConta = seloExclusivo && contaKey ? 'k:' + contaKey : null;
+      // não leva o selo/capa duas vezes nem trocando o nick do launcher.
+      const chaveConta = exigeConta && contaKey ? 'k:' + contaKey : null;
       if (chaveConta && redeemedBy.includes(chaveConta)) {
         return { status: 409, body: { error: 'code_already_redeemed' } };
       }
@@ -969,9 +1044,9 @@ app.post('/api/redeem', async (req, res) => {
       if (entry.expiresAt && (!Number.isFinite(Date.parse(entry.expiresAt)) || Date.now() > Date.parse(entry.expiresAt))) {
         return { status: 410, body: { error: 'code_expired' } };
       }
-      // Selo exige CONTA: sem identidade o código nem é consumido (por isso esta
-      // checagem vem DEPOIS do esgotado — código esgotado sem identidade = 410).
-      if (seloExclusivo && !contaKey) {
+      // Selo/capa exige CONTA: sem identidade o código nem é consumido (por isso
+      // esta checagem vem DEPOIS do esgotado — código esgotado sem identidade = 410).
+      if (exigeConta && !contaKey) {
         return { status: 400, body: { error: 'no_account', message: 'Entre numa conta para resgatar este codigo.' } };
       }
 
@@ -999,6 +1074,16 @@ app.post('/api/redeem', async (req, res) => {
         try {
           const g = await coinsGrantSeal(coinsIdentRedeem, sealPedido, code);
           seloCreditado = !!(g && g.granted);
+        } catch (_) {}
+      }
+      // CAPA EXCLUSIVA do código: a POSSE é gravada na CONTA (ownedCapes do
+      // data/coins.json) — SEM moeda nenhuma envolvida. O launcher só espelha o
+      // que o GET /api/coins devolve (ownedCapes).
+      let capaCreditada = false;
+      if (capaPedida) {
+        try {
+          const g = await coinsGrantCape(coinsIdentRedeem, capaPedida, code);
+          capaCreditada = !!(g && g.granted);
         } catch (_) {}
       }
       const premioMoedas = Math.max(0, Math.min(100000, Math.floor(Number(source.coins) || 0)));
@@ -1031,6 +1116,10 @@ app.post('/api/redeem', async (req, res) => {
           // confirma a posse é o GET /api/coins (ownedSeals) — nunca o cliente.
           seal: seloExclusivo ? sealPedido : null,
           sealGranted: seloCreditado,
+          // CAPA EXCLUSIVA do código (id do catálogo do launcher) + se a posse
+          // entrou AGORA na conta. Quem confirma é o GET /api/coins (ownedCapes).
+          capeId: capaPedida,
+          capeGranted: capaCreditada,
           username: username || null,
           redeemedAt: Date.now()
         }
@@ -1130,12 +1219,14 @@ app.post('/api/admin/bans', requireAdmin, (req, res) => {
     const lista = dados.bans.slice();
     let adicionados = 0;
     let atualizados = 0;
+    const comHwid = [];
     for (const bruto of entradas.slice(0, 500)) {
       const limpo = bansSanitizeEntry(bruto);
       if (!limpo) continue;
       const i = lista.findIndex((b) => (
         (limpo.username && b.username && b.username.toLowerCase() === limpo.username.toLowerCase()) ||
-        (limpo.uuid && b.uuid && bansUuidEq(b.uuid, limpo.uuid))
+        (limpo.uuid && b.uuid && bansUuidEq(b.uuid, limpo.uuid)) ||
+        (limpo.hwid && b.hwid && b.hwid === limpo.hwid)
       ));
       if (i >= 0) {
         lista[i] = { ...lista[i], ...limpo };
@@ -1144,12 +1235,34 @@ app.post('/api/admin/bans', requireAdmin, (req, res) => {
         lista.push(limpo);
         adicionados += 1;
       }
+      if (limpo.hwid) comHwid.push(limpo);
     }
     const proximo = writeBansFile({
       version: Math.max(1, Math.floor(Number(dados.version) || 1)) + 1,
       updatedAt: new Date().toISOString(),
       bans: lista.slice(0, BANS_MAX_ENTRIES)
     });
+    // Aviso no webhook do Guard: ban por HWID aplicado (o dono/equipe acompanha).
+    try {
+      if (comHwid.length) {
+        const url = guardWebhookUrl();
+        if (url) {
+          guardWebhookPost(url, {
+            username: 'Reality Guard',
+            embeds: [{
+              title: '⛔ Ban por HWID (placa-mae) aplicado',
+              color: 0xB00020,
+              fields: comHwid.slice(0, 15).map((b) => ({
+                name: (b.username || b.uuid || 'hwid'),
+                value: '`' + String(b.hwid).slice(0, 24) + '…` — ' + String(b.reason || '').slice(0, 120),
+                inline: false
+              })),
+              footer: { text: 'data/bans.json — vale mesmo com nick/conta novos e .reality apagado' }
+            }]
+          }).catch(() => {});
+        }
+      }
+    } catch (_) {}
     res.json({ ok: true, added: adicionados, updated: atualizados, count: proximo.bans.length, bans: proximo.bans.map(banPublicEntry) });
   } catch (_) {
     try { res.status(500).json({ ok: false, error: 'bans_save_failed' }); } catch (_2) {}
@@ -1161,12 +1274,14 @@ app.delete('/api/admin/bans', requireAdmin, (req, res) => {
     const body = req.body || {};
     const username = String(body.username || req.query.username || '').trim().toLowerCase();
     const uuid = String(body.uuid || req.query.uuid || '').trim();
-    if (!username && !uuid) return res.status(400).json({ ok: false, error: 'missing_username_or_uuid' });
+    const hwid = String(body.hwid || req.query.hwid || '').trim().toLowerCase();
+    if (!username && !uuid && !hwid) return res.status(400).json({ ok: false, error: 'missing_username_uuid_or_hwid' });
     const dados = readBans(true);
     const antes = dados.bans.length;
     const lista = dados.bans.filter((b) => {
       if (username && b.username && b.username.toLowerCase() === username) return false;
       if (uuid && b.uuid && bansUuidEq(b.uuid, uuid)) return false;
+      if (hwid && b.hwid && b.hwid === hwid) return false;
       return true;
     });
     const proximo = writeBansFile({
@@ -1421,23 +1536,148 @@ app.get('/api/guard/reports', (req, res) => {
 });
 
 
-// ---------- Top Tempo (ranking global de tempo de uso) — aditivo ----------
-// Endpoints NOVOS (nenhuma rota existente foi alterada):
-//   POST /api/ranking/time  { uuid, name, ms }  -> TOTAL acumulado do jogador
+// ---------- Mapa HWID -> contas (aprendido do X-Reality-Device pos-fix) ----------
+// Quando o launcher novo (com HWID de hardware) aparecer, CADA contato registra
+// <hwid> -> { names, uuids, firstSeen, lastSeen } em <data>/hwid-map.json. Serve
+// pro dono: achar o HWID de um trapaceiro que voltou (GET /api/admin/hwid-map?uuid=
+// ou ?name=) e bani-lo por hardware (POST /api/admin/bans { hwid, reason }).
+// Só aceita hash sha256 (64 hex) — chaves antigas aleatórias ficam de fora.
+const HWID_MAP_FILE = path.join(DATA_DIR, 'hwid-map.json');
+const HWID_MAP_MAX = 5000;
+const HWID_MAP_HISTORY = 8;
+let hwidMapMem = null;      // cache em memoria (flush a cada 30s)
+let hwidMapDirty = false;
+
+function hwidMapLoad() {
+  if (hwidMapMem) return hwidMapMem;
+  try {
+    if (fs.existsSync(HWID_MAP_FILE)) {
+      const b = JSON.parse(fs.readFileSync(HWID_MAP_FILE, 'utf-8'));
+      if (b && typeof b === 'object' && !Array.isArray(b)) { hwidMapMem = b; return hwidMapMem; }
+    }
+  } catch (_) {}
+  hwidMapMem = {};
+  return hwidMapMem;
+}
+
+function hwidMapFlush() {
+  if (!hwidMapDirty || !hwidMapMem) return;
+  try {
+    const tempFile = HWID_MAP_FILE + '.tmp';
+    fs.writeFileSync(tempFile, JSON.stringify(hwidMapMem, null, 2), 'utf-8');
+    fs.renameSync(tempFile, HWID_MAP_FILE);
+    hwidMapDirty = false;
+  } catch (_) {}
+}
+setInterval(hwidMapFlush, 30000).unref();
+
+/** Registra o device do request no mapa (best-effort, nunca lança). */
+function trackDevice(req, name, uuid) {
+  try {
+    const hwid = deviceFromRequest(req);
+    if (!/^[a-f0-9]{64}$/.test(hwid)) return false; // so o HWID de hardware entra
+    const nome = String(name || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 16);
+    const id = String(uuid || '').trim().toLowerCase().slice(0, 40);
+    const dados = hwidMapLoad();
+    const agora = Date.now();
+    const e = dados[hwid] && typeof dados[hwid] === 'object' ? dados[hwid] : { firstSeen: agora, names: [], uuids: [] };
+    e.lastSeen = agora;
+    if (!Array.isArray(e.names)) e.names = [];
+    if (!Array.isArray(e.uuids)) e.uuids = [];
+    if (nome && !e.names.includes(nome)) { e.names.push(nome); if (e.names.length > HWID_MAP_HISTORY) e.names.shift(); }
+    if (id && !e.uuids.includes(id)) { e.uuids.push(id); if (e.uuids.length > HWID_MAP_HISTORY) e.uuids.shift(); }
+    dados[hwid] = e;
+    const chaves = Object.keys(dados);
+    if (chaves.length > HWID_MAP_MAX) {
+      chaves.sort((a, b) => (dados[b].lastSeen || 0) - (dados[a].lastSeen || 0)).slice(HWID_MAP_MAX).forEach((k) => delete dados[k]);
+    }
+    hwidMapDirty = true;
+    return true;
+  } catch (_) { return false; }
+}
+
+/** GET /api/admin/hwid-map — dono consulta o mapa (filtros: ?hwid= ?uuid= ?name=). */
+app.get('/api/admin/hwid-map', requireAdmin, (req, res) => {
+  try {
+    hwidMapFlush();
+    const dados = hwidMapLoad();
+    const qHwid = String(req.query.hwid || '').trim().toLowerCase();
+    const qUuid = String(req.query.uuid || '').trim().toLowerCase();
+    const qName = String(req.query.name || '').trim().toLowerCase();
+    const lista = [];
+    for (const [hwid, info] of Object.entries(dados)) {
+      if (qHwid && hwid !== qHwid) continue;
+      if (qUuid && !(Array.isArray(info.uuids) && info.uuids.some((u) => String(u).toLowerCase().includes(qUuid)))) continue;
+      if (qName && !(Array.isArray(info.names) && info.names.some((n) => String(n).toLowerCase() === qName))) continue;
+      lista.push({ hwid, firstSeen: info.firstSeen || 0, lastSeen: info.lastSeen || 0, names: info.names || [], uuids: info.uuids || [] });
+    }
+    lista.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+    res.json({ ok: true, count: lista.length, entries: lista.slice(0, 200) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'hwid_map_read_failed' }); } catch (_2) {}
+  }
+});
+
+/** GET /api/admin/ranking-time — visao crua do TOP TEMPO (inclui anomalias por conta). */
+app.get('/api/admin/ranking-time', requireAdmin, (req, res) => {
+  try {
+    const dados = readRankingTime();
+    const lista = Object.entries(dados)
+      .map(([uuid, info]) => ({ uuid, name: info.name, ms: info.ms, updatedAt: info.updatedAt, lastCreditAt: info.lastCreditAt, lastReportMs: info.lastReportMs, day: info.day, anomalies: info.anomalies }))
+      .sort((a, b) => b.ms - a.ms);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '80', 10) || 80));
+    res.json({ ok: true, count: lista.length, entries: lista.slice(0, limit) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'ranking_read_failed' }); } catch (_2) {}
+  }
+});
+
+/** GET /api/admin/ranking-anomalies — ultimas anomalias do TOP TEMPO (arquivo). */
+app.get('/api/admin/ranking-anomalies', requireAdmin, (req, res) => {
+  try {
+    let lista = [];
+    try { if (fs.existsSync(RANKING_ANOMALY_FILE)) { const b = JSON.parse(fs.readFileSync(RANKING_ANOMALY_FILE, 'utf-8')); if (Array.isArray(b)) lista = b; } } catch (_) { lista = []; }
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '80', 10) || 80));
+    res.json({ ok: true, count: lista.length, anomalies: lista.slice(0, limit) });
+  } catch (_) {
+    try { res.status(500).json({ ok: false, error: 'anomalies_read_failed' }); } catch (_2) {}
+  }
+});
+
+// ---------- Top Tempo (ranking global de tempo de uso) — SERVER-AUTHORITATIVE ----------
+// Endpoints:
+//   POST /api/ranking/time  { uuid, name, ms }  -> ms = TOTAL acumulado (o launcher manda
+//                              o total dele; o SERVIDOR decide quanto creditar)
 //   GET  /api/ranking/time?limit=20             -> ranking (pos, name, ms, updatedAt)
-// Dados: <data>/ranking-time.json = { "<uuid>": { name, ms, updatedAt } }
-// O launcher reporta o TOTAL de tempo de launcher aberto (NÃO incrementos): a cada
-// ~90s, logo após o boot e na saída. O valor guardado é max(anterior, ms) — um
-// reporte perdido (offline/429/troca de conta) nunca mais atrasa o placar, o
-// próximo reporte reenvia o total. Trava anti-inflação: um reporte sobe no máximo
-// 24h acima do valor anterior e o valor NUNCA diminui; updatedAt = agora a cada
-// reporte aceito (mantém a lista "viva" para todos os clientes). Arquivo
-// ausente/corrompido => recomeça vazio. Nunca derruba o servidor.
+// Dados: <data>/ranking-time.json = { "<uuid>": { name, ms, updatedAt, lastCreditAt,
+//        lastReportMs, day: { windowStart, credited }, anomalies: [...] } }
+//
+// SEGURANCA (fix 2026-09-30): o tempo e do SERVIDOR. O cliente NAO seta o total:
+//   - credito = min(aumento_pedido, tempo_real_desde_o_ultimo_credito + folga);
+//     ou seja, um reporte sobe o total, no maximo, ~o tempo de relogio que passou
+//     (aumento absurdo e TRUNCADO e vira anomalia).
+//   - catch-up limitado: no maximo 6h + folga por reporte (rede caiu etc).
+//   - teto diario: no maximo 26h creditadas por janela movel de 24h por conta.
+//   - primeira aparicao (uuid desconhecido): semente de no maximo 6h; o excedente
+//     NUNCA e creditado depois.
+//   - rate limit por IP REAL (clientKey) e por CONTA (uuid).
+//   - anomalias (salto de tempo / teto diario / semente alta) vao para
+//     <data>/ranking-anomalies.json + webhook do Guard (dedupe de 10 min).
+//   - conta banida (nick/uuid/HWID) nao reporta: 403.
+// O arquivo nunca derruba o servidor; leitura/escrita com fila e troca atomica.
 const RANKING_TIME_FILE = path.join(DATA_DIR, 'ranking-time.json');
-const RANKING_TIME_MAX_GROWTH_MS = 24 * 60 * 60 * 1000; // teto de crescimento por reporte
+const RANKING_ANOMALY_FILE = path.join(DATA_DIR, 'ranking-anomalies.json');
 const RANKING_TIME_MAX_TOTAL_MS = 100 * 365 * 24 * 60 * 60 * 1000; // sanidade do payload (100 anos)
-const RANKING_TIME_WINDOW_MS = 60 * 1000;               // 1 reporte por IP a cada ~60s
-const RANKING_TIME_MAX_ENTRIES = 5000;                  // teto defensivo do arquivo
+const RANKING_TIME_WINDOW_MS = 60 * 1000;                          // 1 reporte por IP a cada ~60s
+const RANKING_TIME_UUID_WINDOW_MS = 45 * 1000;                     // 1 reporte por conta a cada ~45s
+const RANKING_TIME_MAX_ENTRIES = 5000;                             // teto defensivo do arquivo
+const RANKING_CREDIT_SLACK_MS = 30 * 1000;                         // folga por reporte (latencia/relogio)
+const RANKING_CREDIT_MAX_SPAN_MS = 6 * 60 * 60 * 1000;             // catch-up maximo entre reportes
+const RANKING_DAY_MS = 24 * 60 * 60 * 1000;                        // janela movel do teto diario
+const RANKING_DAY_MAX_MS = 26 * 60 * 60 * 1000;                    // teto creditavel por janela (24h + 2h de folga)
+const RANKING_SEED_MAX_MS = 6 * 60 * 60 * 1000;                    // 1a aparicao: teto da semente
+const RANKING_TRUNC_EPS_MS = 60 * 1000;                            // truncou > 1 min => anomalia
+const RANKING_ANOMALY_MAX = 500;
 let rankingTimeQueue = Promise.resolve();
 
 function withRankingTimeLock(task) {
@@ -1456,22 +1696,34 @@ function readRankingTime() {
       try {
         if (!info || typeof info !== 'object') continue;
         // Chave e nome no MESMO formato que o POST aceita: entrada fora do
-        // padrão (arquivo editado na mão / corrompido) é descartada.
+        // padrao (arquivo editado na mao / corrompido) e descartada.
         if (!/^[0-9a-fA-F-]{32,36}$/.test(String(uuid))) continue;
         const ms = Math.floor(Number(info.ms));
         if (!Number.isFinite(ms) || ms <= 0) continue;
         const name = String(info.name || '').trim();
         if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) continue;
+        const diaBruto = (info.day && typeof info.day === 'object') ? info.day : {};
         limpo[String(uuid)] = {
           name,
           ms,
-          updatedAt: Math.max(0, Math.floor(Number(info.updatedAt) || 0))
+          updatedAt: Math.max(0, Math.floor(Number(info.updatedAt) || 0)),
+          lastCreditAt: Math.max(0, Math.floor(Number(info.lastCreditAt) || 0)),
+          lastReportMs: Math.max(0, Math.floor(Number(info.lastReportMs) || 0)),
+          day: {
+            windowStart: Math.max(0, Math.floor(Number(diaBruto.windowStart) || 0)),
+            credited: Math.max(0, Math.floor(Number(diaBruto.credited) || 0))
+          },
+          anomalies: Array.isArray(info.anomalies) ? info.anomalies.slice(-10).map((a) => ({
+            at: Math.max(0, Math.floor(Number(a && a.at) || 0)),
+            reason: String((a && a.reason) || '').slice(0, 40),
+            detail: String((a && a.detail) || '').slice(0, 160)
+          })) : []
         };
-      } catch (_) { /* entrada inválida: ignora */ }
+      } catch (_) { /* entrada invalida: ignora */ }
     }
     return limpo;
   } catch (_) {
-    return {}; // arquivo ausente/corrompido => recomeça vazio
+    return {}; // arquivo ausente/corrompido => recomeca vazio
   }
 }
 
@@ -1480,11 +1732,78 @@ function writeRankingTime(dados) {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     const tempFile = `${RANKING_TIME_FILE}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(dados, null, 2), 'utf-8');
-    fs.renameSync(tempFile, RANKING_TIME_FILE); // troca atômica (igual ao manifesto)
+    fs.renameSync(tempFile, RANKING_TIME_FILE); // troca atomica (igual ao manifesto)
     return true;
   } catch (_) {
     return false;
   }
+}
+
+// ---- anomalias: arquivo + webhook do Guard ----
+let rankingAnomalyQueue = Promise.resolve();
+const rankingAnomalyWebhookDedupe = new Map(); // uuid|reason -> ultimo envio
+let rankingAnomalyWebhookWindow = { start: 0, count: 0 };
+const RANKING_ANOMALY_WEBHOOK_DEDUPE_MS = 10 * 60 * 1000;
+const RANKING_ANOMALY_WEBHOOK_MAX_PER_MIN = 6;
+
+function rankingAnomalyRecord(uuid, name, reason, detail) {
+  const registro = {
+    at: Date.now(),
+    uuid: String(uuid || '').slice(0, 40),
+    name: String(name || '').slice(0, 16),
+    reason: String(reason || '').slice(0, 40),
+    detail: String(detail || '').slice(0, 160)
+  };
+  rankingAnomalyQueue = rankingAnomalyQueue.catch(() => {}).then(() => {
+    try {
+      let lista = [];
+      try {
+        if (fs.existsSync(RANKING_ANOMALY_FILE)) {
+          const b = JSON.parse(fs.readFileSync(RANKING_ANOMALY_FILE, 'utf-8'));
+          if (Array.isArray(b)) lista = b;
+        }
+      } catch (_) { lista = []; }
+      lista.unshift(registro);
+      if (lista.length > RANKING_ANOMALY_MAX) lista.length = RANKING_ANOMALY_MAX;
+      const tempFile = `${RANKING_ANOMALY_FILE}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(lista, null, 2), 'utf-8');
+      fs.renameSync(tempFile, RANKING_ANOMALY_FILE);
+    } catch (_) {}
+  });
+  try { console.log('[ranking] anomalia', registro.name || registro.uuid, registro.reason, '|', registro.detail.slice(0, 120)); } catch (_) {}
+  try { rankingAnomalyWebhook(registro); } catch (_) {}
+  return registro;
+}
+
+function rankingAnomalyWebhook(registro) {
+  const url = guardWebhookUrl();
+  if (!url) return 'disabled';
+  const chave = String(registro.uuid) + '|' + registro.reason;
+  const agora = Date.now();
+  if (agora - (rankingAnomalyWebhookDedupe.get(chave) || 0) < RANKING_ANOMALY_WEBHOOK_DEDUPE_MS) return 'deduped';
+  if (agora - rankingAnomalyWebhookWindow.start > 60000) rankingAnomalyWebhookWindow = { start: agora, count: 0 };
+  if (rankingAnomalyWebhookWindow.count >= RANKING_ANOMALY_WEBHOOK_MAX_PER_MIN) return 'throttled';
+  rankingAnomalyWebhookDedupe.set(chave, agora);
+  if (rankingAnomalyWebhookDedupe.size > 500) {
+    for (const [k, t] of rankingAnomalyWebhookDedupe) { if (agora - t > RANKING_ANOMALY_WEBHOOK_DEDUPE_MS) rankingAnomalyWebhookDedupe.delete(k); }
+  }
+  rankingAnomalyWebhookWindow.count += 1;
+  guardWebhookPost(url, {
+    username: 'Reality Guard',
+    embeds: [{
+      title: '🚨 TOP TEMPO — anomalia de tempo',
+      color: 0xE74C3C,
+      fields: [
+        { name: 'Jogador', value: '`' + (registro.name || '?') + '`', inline: true },
+        { name: 'UUID', value: '`' + registro.uuid + '`', inline: true },
+        { name: 'Tipo', value: '`' + registro.reason + '`', inline: true },
+        { name: 'Detalhe', value: registro.detail.slice(0, 400) || '—', inline: false },
+        { name: 'Horario (Brasilia)', value: guardBrasiliaTime(registro.at), inline: true }
+      ],
+      footer: { text: 'top tempo anti-fraude (server-authoritative)' }
+    }]
+  }).catch(() => {});
+  return 'sent';
 }
 
 app.post('/api/ranking/time', (req, res) => {
@@ -1499,32 +1818,90 @@ app.post('/api/ranking/time', (req, res) => {
     if (!/^[A-Za-z0-9_]{1,16}$/.test(name)) {
       return res.status(400).json({ ok: false, error: 'invalid_name' });
     }
-    // ms = TOTAL acumulado (pode passar de 24h: é o tempo de uso do jogador).
-    // Aqui só um teto de sanidade do payload — a trava anti-inflação é aplicada
-    // abaixo, contra o valor já guardado.
+    // ms = TOTAL acumulado reportado pelo launcher (so um teto de sanidade do payload).
     if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms <= 0 || ms > RANKING_TIME_MAX_TOTAL_MS) {
       return res.status(400).json({ ok: false, error: 'invalid_ms' });
     }
-    // SEGURANCA: rate limit por IP REAL (clientKey — X-Forwarded-For é forjável):
-    // no máximo 1 reporte a cada ~60s por IP.
+    // BAN: conta/HWID banido nao reporta.
+    const banido = banCheckRequest(req, null);
+    if (banido) return res.status(403).json(banBlockBody(banido));
+    const key = normalizeUuid(uuid);
+    // rate limit por IP REAL (clientKey) e por CONTA.
     if (!rateLimit(clientKey(req), 'ranking-time', 1, RANKING_TIME_WINDOW_MS)) {
       return res.status(429).json({ ok: false, error: 'too_many_reports' });
     }
-    const key = normalizeUuid(uuid);
+    if (!rateLimit(key, 'ranking-time-uuid', 1, RANKING_TIME_UUID_WINDOW_MS)) {
+      return res.status(429).json({ ok: false, error: 'too_many_reports' });
+    }
+    try { trackDevice(req, name, key); } catch (_) {}
     withRankingTimeLock(() => {
       const dados = readRankingTime();
-      const prev = dados[key] || { name: '', ms: 0 };
-      const anterior = Math.max(0, Math.floor(Number(prev.ms) || 0));
-      // TOTAL ACUMULADO: guarda o MAIOR valor. Nunca soma (um incremento perdido
-      // não atrasa mais o placar) e nunca diminui (reporte atrasado/menor é
-      // ignorado no valor, mas renova o updatedAt).
-      let total = Math.max(anterior, Math.floor(ms));
-      // Trava anti-inflação: um único reporte não sobe mais de 24h acima do anterior.
-      if (total > anterior + RANKING_TIME_MAX_GROWTH_MS) total = anterior + RANKING_TIME_MAX_GROWTH_MS;
-      dados[key] = { name, ms: total, updatedAt: Date.now() };
+      const agora = Date.now();
+      const prev = dados[key] || null;
+      let total = 0;
+      let creditado = 0;
+      if (!prev) {
+        // 1a aparicao pos-fix: semente limitada (excedente nunca e creditado depois).
+        total = Math.min(Math.floor(ms), RANKING_SEED_MAX_MS);
+        creditado = total;
+        dados[key] = {
+          name,
+          ms: total,
+          updatedAt: agora,
+          lastCreditAt: agora,
+          lastReportMs: Math.floor(ms),
+          day: { windowStart: agora, credited: total },
+          anomalies: []
+        };
+        if (ms > RANKING_SEED_MAX_MS) {
+          rankingAnomalyRecord(key, name, 'semente_alta',
+            'primeiro reporte pediu ' + Math.floor(ms / 1000) + 's; teto de semente ' + Math.floor(RANKING_SEED_MAX_MS / 1000) + 's; aceitos ' + Math.floor(total / 1000) + 's');
+        }
+      } else {
+        const baseline = Math.max(
+          Math.floor(Number(prev.lastReportMs) || 0),
+          Math.floor(Number(prev.ms) || 0)
+        );
+        const aumentoPedido = Math.floor(ms) - baseline; // >0 = pediu tempo novo
+        const ultimoCredito = Math.floor(Number(prev.lastCreditAt) || 0);
+        const elapsed = ultimoCredito > 0 ? Math.max(0, agora - ultimoCredito) : 0;
+        const permissaoBase = Math.min(elapsed, RANKING_CREDIT_MAX_SPAN_MS) + RANKING_CREDIT_SLACK_MS;
+        let dia = (prev.day && typeof prev.day === 'object') ? prev.day : { windowStart: 0, credited: 0 };
+        if (!dia.windowStart || agora - dia.windowStart > RANKING_DAY_MS) dia = { windowStart: agora, credited: 0 };
+        const creditedBruto = Math.max(0, Math.floor(Number(dia.credited) || 0));
+        const sobraDia = Math.max(0, RANKING_DAY_MAX_MS - creditedBruto);
+        const permissao = Math.min(permissaoBase, sobraDia);
+        if (aumentoPedido > 0) creditado = Math.max(0, Math.min(aumentoPedido, permissao));
+        total = Math.max(0, Math.floor(Number(prev.ms) || 0)) + creditado;
+        const truncado = Math.max(0, aumentoPedido - creditado);
+        if (truncado > RANKING_TRUNC_EPS_MS) {
+          const motivo = sobraDia <= permissaoBase ? 'teto_dia' : 'salto_tempo';
+          const registro = rankingAnomalyRecord(key, name, motivo,
+            'pediu +' + Math.round(aumentoPedido / 1000) + 's (total ' + Math.floor(ms / 1000) + 's); permitido +' + Math.round(permissao / 1000) + 's (janela ' + Math.round(elapsed / 1000) + 's; sobra do dia ' + Math.round(sobraDia / 1000) + 's); creditado +' + Math.round(creditado / 1000) + 's; truncado ' + Math.round(truncado / 1000) + 's');
+          try {
+            if (!Array.isArray(prev.anomalies)) prev.anomalies = [];
+            prev.anomalies.push({ at: registro.at, reason: registro.reason, detail: registro.detail });
+            if (prev.anomalies.length > 10) prev.anomalies = prev.anomalies.slice(-10);
+          } catch (_) {}
+        } else if (aumentoPedido < -5 * 60 * 1000) {
+          // regressao grande (ex.: config apagado/maquina nova): registra sem bloquear
+          try {
+            if (!Array.isArray(prev.anomalies)) prev.anomalies = [];
+            prev.anomalies.push({ at: agora, reason: 'regressao', detail: 'reporte de ' + Math.floor(ms / 1000) + 's; servidor tinha ' + Math.floor(baseline / 1000) + 's' });
+            if (prev.anomalies.length > 10) prev.anomalies = prev.anomalies.slice(-10);
+          } catch (_) {}
+        }
+        prev.name = name;
+        prev.ms = total;
+        prev.updatedAt = agora;
+        prev.lastReportMs = Math.max(baseline, Math.floor(ms));
+        if (creditado > 0) prev.lastCreditAt = agora;
+        prev.day = { windowStart: dia.windowStart, credited: creditedBruto + creditado };
+        dados[key] = prev;
+      }
       const chaves = Object.keys(dados);
       if (chaves.length > RANKING_TIME_MAX_ENTRIES) {
-        // Teto defensivo: mantém só os maiores tempos.
+        // Teto defensivo: mantem so os maiores tempos.
         const maiores = chaves.sort((a, b) => dados[b].ms - dados[a].ms).slice(0, RANKING_TIME_MAX_ENTRIES);
         const reduzido = {};
         for (const k of maiores) reduzido[k] = dados[k];
@@ -1532,9 +1909,9 @@ app.post('/api/ranking/time', (req, res) => {
       } else {
         writeRankingTime(dados);
       }
-      return total;
-    }).then((total) => {
-      try { res.json({ ok: true, ms: total }); } catch (_) {}
+      return { total, creditado };
+    }).then((r) => {
+      try { res.json({ ok: true, ms: r.total, credited: r.creditado }); } catch (_) {}
     }).catch(() => {
       try { res.status(500).json({ ok: false, error: 'ranking_save_failed' }); } catch (_) {}
     });
@@ -1666,48 +2043,160 @@ function coinsExclusiveSeals() {
   return out;
 }
 
-/** Os 10 códigos de USO ÚNICO do selo 'Beta Test' (o launcher já os conhece). */
+// ---------- CAPAS EXCLUSIVAS de código (NUNCA estão à venda) ----------
+// Espelho de src/redeemCatalog.js + LOCAL_CAPES do renderer. A POSSE só entra
+// pelo resgate de um código (`capeId` na entrada do manifest.codes): o POST
+// /api/redeem grava o id no ownedCapes da CONTA (data/coins.json). Nada aqui
+// entra em COIN_CAPE_PRICES (que é só o que a loja vende).
+//   - capa_beta_test        -> 10 códigos BTSRLY* (uso único cada)
+//   - capa_reality_display  -> 10 códigos RLTYRED*  (uso único cada)
+//   - capa_pindown_cat      -> 1 código (RLTYPINDOWN), PRIVADA: `hidden` = não
+//     aparece em catálogo público nenhum, só no ownedCapes de quem resgatou.
+const COIN_CAPE_EXCLUSIVE = {
+  capa_beta_test: {
+    name: 'Beta Test',
+    rarity: 'legendary',
+    color: '#22c55e',
+    color2: '#064e3b',
+    gradient: 'linear-gradient(135deg,#4ade80,#22c55e 45%,#0f766e)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: true,
+    price: 0,
+    forSale: false
+  },
+  capa_reality_display: {
+    name: 'Reality Client',
+    rarity: 'legendary',
+    color: '#ef4444',
+    color2: '#450a0a',
+    gradient: 'linear-gradient(135deg,#f87171,#ef4444 45%,#7f1d1d)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: true,
+    price: 0,
+    forSale: false
+  },
+  capa_pindown_cat: {
+    name: 'Pin Down (animada)',
+    rarity: 'mythic',
+    color: '#38bdf8',
+    color2: '#0c4a6e',
+    gradient: 'linear-gradient(135deg,#7dd3fc,#38bdf8 45%,#075985)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: true,
+    hidden: true,   // privada do dono: fora do catálogo público
+    private: true,
+    animated: true,
+    price: 0,
+    forSale: false
+  }
+};
+
+/** Catálogo PÚBLICO das capas exclusivas (sem as `hidden`, ex.: a privada). */
+function coinsExclusiveCapes() {
+  const out = {};
+  for (const [id, def] of Object.entries(COIN_CAPE_EXCLUSIVE)) {
+    if (def.hidden) continue;
+    out[id] = Object.assign({}, def);
+  }
+  return out;
+}
+
+/** Os 10 códigos de USO ÚNICO do selo + CAPA 'Beta Test' (o launcher já os conhece). */
 const BETA_TEST_CODES = [
   'BTSRLY10', 'BTSRLY12', 'BTSRLY50', 'BTSRLY42', 'BTSRLY67',
   'BTSRLY2001', 'BTSRLY302', 'BTSRLY163', 'BTSRLY0725', 'BTSRLY5427'
 ];
+
+/** Os 10 códigos de USO ÚNICO da CAPA vermelha 'REALITY CLIENT'. */
+const RED_CAPE_CODES = [
+  'RLTYRED01', 'RLTYRED02', 'RLTYRED03', 'RLTYRED04', 'RLTYRED05',
+  'RLTYRED06', 'RLTYRED07', 'RLTYRED08', 'RLTYRED09', 'RLTYRED10'
+];
+
+/** O código ÚNICO da CAPA ANIMADA privada do dono (não sai em lugar nenhum). */
+const ANIMATED_CAPE_CODE = 'RLTYPINDOWN';
 
 function betaTestCodeEntry() {
   return {
     visual: null,
     badge: 'Beta Test',
     cape: null,
+    capeId: 'capa_beta_test', // CAPA verde Beta Test, gravada no ownedCapes da conta
     role: 'Beta Test',
     displayName: null,
-    seal: BETA_TEST_SEAL_ID, // recompensa: selo exclusivo gravado na CONTA
-    usesLeft: 1,
+    seal: BETA_TEST_SEAL_ID,  // + selo exclusivo 'beta_test' (badge)
+    usesLeft: 1,              // uso único: 1 resgate no total
+    redeemedBy: []
+  };
+}
+
+function exclusiveCapeCodeEntry(badge, role, capeId, seal) {
+  return {
+    visual: null,
+    badge,
+    cape: null,
+    capeId,
+    role,
+    displayName: null,
+    seal: seal || null,
+    usesLeft: 1,              // uso único
     redeemedBy: []
   };
 }
 
 /**
- * SEMENTE IDEMPOTENTE (rodada no boot): cria no manifest.codes só os códigos
- * BTSRLY* que AINDA NÃO EXISTEM — nunca sobrescreve um código existente (nem
- * para "restaurar" usesLeft/redeemedBy: o que já foi resgatado segue
- * resgatado). Sem novidade, não toca no arquivo.
+ * Catálogo dos códigos EXCLUSIVOS (uso único, SEM moedas): [codigo, entrada].
+ * Nenhum deles credita moeda — a recompensa é a POSSE na conta (selo e/ou capa).
  */
-function seedBetaTestCodes() {
+function exclusiveCodeCatalog() {
+  const out = [];
+  for (const code of BETA_TEST_CODES) out.push([code, betaTestCodeEntry()]);
+  for (const code of RED_CAPE_CODES) {
+    out.push([code, exclusiveCapeCodeEntry('Reality Client', 'Reality Client', 'capa_reality_display')]);
+  }
+  out.push([ANIMATED_CAPE_CODE, exclusiveCapeCodeEntry('Dono do Reality', 'Dono do Reality Client', 'capa_pindown_cat')]);
+  return out;
+}
+
+/**
+ * SEMENTE IDEMPOTENTE (rodada no boot): cria no manifest.codes só os códigos
+ * que AINDA NÃO EXISTEM — nunca sobrescreve um código existente (nem para
+ * "restaurar" usesLeft/redeemedBy: o que já foi resgatado segue resgatado).
+ * MIGRAÇÃO: código que já existia (seed antiga, sem recompensa de capa) ganha
+ * só o `capeId`/`seal` que faltar — usesLeft/redeemedBy ficam intactos.
+ */
+function seedExclusiveCodes() {
   return withRedeemLock(() => {
     const m = readManifest();
     if (!m.codes || typeof m.codes !== 'object' || Array.isArray(m.codes)) m.codes = {};
     const criados = [];
-    for (const code of BETA_TEST_CODES) {
+    const migrados = [];
+    for (const [code, def] of exclusiveCodeCatalog()) {
       const atual = m.codes[code];
-      if (atual && typeof atual === 'object' && !Array.isArray(atual)) continue; // existe: preserva
-      m.codes[code] = betaTestCodeEntry();
-      criados.push(code);
+      if (!atual || typeof atual !== 'object' || Array.isArray(atual)) {
+        m.codes[code] = def;
+        criados.push(code);
+        continue;
+      }
+      let mexeu = false;
+      if (def.capeId && atual.capeId !== def.capeId) { atual.capeId = def.capeId; mexeu = true; }
+      if (def.seal && atual.seal !== def.seal) { atual.seal = def.seal; mexeu = true; }
+      if (mexeu) migrados.push(code);
     }
-    if (criados.length) {
+    if (criados.length || migrados.length) {
       writeManifest(m); // grava atômico (tmp + rename) e atualiza updatedAt/version
-      return { created: criados };
+      return { created: criados, migrated: migrados };
     }
-    return { created: [] };
+    return { created: [], migrated: [] };
   });
+}
+
+/** Compatibilidade: nome antigo do seed (usado em outras rodadas/scripts). */
+function seedBetaTestCodes() {
+  return seedExclusiveCodes();
 }
 
 function coinsPolicy() {
@@ -1838,9 +2327,11 @@ function coinsIdentity(req) {
     if (token) {
       const u = social.findUserByToken(token);
       if (u && u.id) {
+        const socialName = String(u.username || '').replace(/[\r\n\t]/g, ' ').slice(0, 32);
+        try { trackDevice(req, socialName, String(u.uuid || u.id || '')); } catch (_) {}
         return {
           key: 'social:' + String(u.id).slice(0, 70),
-          name: String(u.username || '').replace(/[\r\n\t]/g, ' ').slice(0, 32),
+          name: socialName,
           kind: 'social',
           device: String(req.headers['x-reality-device'] || '').slice(0, 64)
         };
@@ -1851,6 +2342,7 @@ function coinsIdentity(req) {
   const name = String(req.headers['x-reality-name'] || (req.body && req.body.name) || '').replace(/[\r\n\t]/g, ' ').slice(0, 32);
   if (!/^[0-9a-fA-F-]{32,36}$/.test(bruto)) return null;
   const nome = /^[A-Za-z0-9_]{1,16}$/.test(name) ? name : '';
+  try { trackDevice(req, nome, normalizeUuid(bruto)); } catch (_) {}
   return {
     key: 'offline:' + normalizeUuid(bruto),
     name: nome,
@@ -1929,6 +2421,11 @@ function coinsPublicState(acc, ident) {
     // conta já possui. Fora de prices.seals de propósito (não estão à venda).
     exclusiveSeals: coinsExclusiveSeals(),
     ownedSealsExclusive: (Array.isArray(acc.ownedSeals) ? acc.ownedSeals : []).filter((id) => !!COIN_SEAL_EXCLUSIVE[id]),
+    // Capas EXCLUSIVAS (só por código): catálogo próprio p/ UI, fora de
+    // prices.capes de propósito (não estão à venda). A capa PRIVADA (hidden)
+    // não entra no catálogo público — aparece só no ownedCapes de quem resgatou.
+    exclusiveCapes: coinsExclusiveCapes(),
+    ownedCapesExclusive: (Array.isArray(acc.ownedCapes) ? acc.ownedCapes : []).filter((id) => !!COIN_CAPE_EXCLUSIVE[id]),
     earn: {
       lastEarnAt: ledger.lastEarnAt || 0,
       nextInMs: proximo,
@@ -1958,6 +2455,35 @@ function coinsCreditRedeem(ident, amount, code) {
     acc.updatedAt = Date.now();
     writeCoins(dados);
     return { credited: premio, coins: acc.coins };
+  });
+}
+
+/**
+ * Concede uma CAPA EXCLUSIVA (de código) na CONTA (ownedCapes do
+ * data/coins.json) — chamado pelo POST /api/redeem quando a entrada premiada
+ * traz `capeId`. Idempotente (se a conta já tem a capa, already: true). NÃO
+ * credita moeda: a recompensa do código é a POSSE. Sem identidade não concede
+ * nada. Escrita atômica via writeCoins, na fila withCoinsLock.
+ */
+function coinsGrantCape(ident, capeId, code) {
+  const id = String(capeId || '').trim();
+  if (!ident || !ident.key || !/^[a-z0-9_]{3,40}$/.test(id)) {
+    return Promise.resolve({ granted: false, already: false });
+  }
+  return withCoinsLock(() => {
+    const dados = readCoins();
+    const acc = coinsEnsureAccount(dados, ident);
+    coinsNoteSource(acc, ident);
+    if (!Array.isArray(acc.ownedCapes)) acc.ownedCapes = [];
+    const ja = acc.ownedCapes.includes(id);
+    if (!ja) {
+      acc.ownedCapes.push(id);
+      if (acc.ownedCapes.length > COINS_MAX_ITEMS) acc.ownedCapes.splice(0, acc.ownedCapes.length - COINS_MAX_ITEMS);
+      acc.ledger.lastEarnEvent = 'code-cape:' + String(code || '').slice(0, 24);
+      acc.updatedAt = Date.now();
+      writeCoins(dados);
+    }
+    return { granted: !ja, already: ja, capeId: id, ownedCapes: acc.ownedCapes.slice() };
   });
 }
 
@@ -2115,6 +2641,17 @@ app.post('/api/coins/spend', (req, res) => {
         item,
         tipo,
         message: 'Selo exclusivo de codigo: so sai por resgate.'
+      });
+    }
+    // Capa EXCLUSIVA de código (ex.: capa_beta_test): NUNCA está à venda — a
+    // resposta é explícita e nada é debitado. Vale também para a capa PRIVADA.
+    if (tipo === 'cape' && COIN_CAPE_EXCLUSIVE[item]) {
+      return res.status(400).json({
+        ok: false,
+        error: 'not_for_sale',
+        item,
+        tipo,
+        message: 'Capa exclusiva de codigo: so sai por resgate.'
       });
     }
     const catalogo = tipo === 'cape' ? COIN_CAPE_PRICES : COIN_SEAL_PRICES;
