@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const presence = require('./presence');
+const hostguard = require('./hostguard');
 const cors = require('cors');
 const crypto = require('crypto');
 
@@ -36,6 +37,9 @@ const redeemAttempts = new Map();
 let redeemQueue = Promise.resolve();
 
 const app = express();
+app.disable('x-powered-by'); // nao anunciar a stack (fingerprint)
+// Detras do nginx: confia no X-Forwarded-For SOMENTE vindo do loopback (clientIp).
+app.set('trust proxy', 'loopback');
 
 // Rate limit simples em memória (anti flood / raid básico)
 const rateLimitMap = new Map();
@@ -74,8 +78,8 @@ app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  // SEGURANCA: o cliente nao escolhe a propria chave do rate limit (X-Forwarded-For e forjavel).
-  const ip = req.socket.remoteAddress || '';
+  // SEGURANCA: o cliente nao escolhe a propria chave do rate limit.
+  const ip = clientKey(req);
   if (!rateLimit(ip, 'global', 120, 60000)) {
     return res.status(429).json({ ok: false, error: 'Too many requests' });
   }
@@ -83,9 +87,33 @@ app.use((req, res, next) => {
 });
 
 
+/**
+ * F01/F16/H1 — IP REAL do cliente, a prova de forja.
+ *
+ * O nginx (que roda no loopback) SOBRESCREVE o X-Forwarded-For com $remote_addr
+ * (nao anexa). O backend so confia nesse header quando a conexao TCP vem de um
+ * endereco LOCAL (loopback) — ou seja, do proxy. Acesso direto na porta 3000
+ * (compat durante a transicao) usa o proprio socket: mandar X-Forwarded-For na
+ * mao nao muda o bucket do rate limit.
+ */
+function isLocalProxyAddr(addr) {
+  const a = String(addr || '');
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1' || a === 'localhost';
+}
+
+function clientIp(req) {
+  const sock = String((req.socket && req.socket.remoteAddress) || '').toLowerCase();
+  if (isLocalProxyAddr(sock)) {
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (xff) return xff.slice(0, 64);
+    const real = String(req.headers['x-real-ip'] || '').trim();
+    if (real) return real.slice(0, 64);
+  }
+  return sock || 'unknown';
+}
+
 function clientKey(req) {
-  // SEGURANCA: nunca usar X-Forwarded-For aqui (o cliente forja e cai em bucket novo).
-  return String(req.socket.remoteAddress || 'unknown').slice(0, 80);
+  return clientIp(req).slice(0, 80);
 }
 
 function isRateLimited(req) {
@@ -95,6 +123,72 @@ function isRateLimited(req) {
   recent.push(now);
   redeemAttempts.set(key, recent);
   return recent.length > 20;
+}
+
+// ---------- F16: rate limit do resgate em CAMADAS + registro de abuso ----------
+// Antes: o POST /api/redeem usava o X-Forwarded-For CRU como chave do limiter
+// (forjavel => bucket novo por request) e so existia limite por chave, entao
+// trocar IP/uuid multiplicava o orcamento de forca bruta de codigo. Agora:
+//   (1) chave = IP REAL (clientKey, a prova de forja por causa do proxy);
+//   (2) chave = CONTA (token social ou uuid), para o mesmo dono nao trocar de IP;
+//   (3) contador GLOBAL (nao-chaveado) como teto absoluto do endpoint;
+//   (4) abuso vai para log + data/redeem-abuse.json (o dono enxerga a tentativa).
+// M5: redeemAttempts (Map que crescia para sempre com chaves forjadas) agora tem
+// varredura periodica E teto de chaves.
+const REDEEM_ATTEMPTS_MAX_KEYS = 50_000;
+const REDEEM_ACCT_MAX_PER_MIN = Math.max(5, Math.floor(Number(process.env.REDEEM_ACCT_MAX_PER_MIN) || 10));
+const REDEEM_GLOBAL_MAX_PER_MIN = Math.max(10, Math.floor(Number(process.env.REDEEM_GLOBAL_MAX_PER_MIN) || 120));
+const REDEEM_ABUSE_FILE = path.join(DATA_DIR, 'redeem-abuse.json');
+const REDEEM_ABUSE_MAX = 500;
+let redeemGlobal = { start: 0, count: 0 };
+let redeemAbuseQueue = Promise.resolve();
+
+setInterval(() => {
+  const agora = Date.now();
+  for (const [k, lista] of redeemAttempts) {
+    const vivos = (Array.isArray(lista) ? lista : []).filter((t) => agora - t < 60_000);
+    if (!vivos.length) redeemAttempts.delete(k);
+    else redeemAttempts.set(k, vivos);
+  }
+  if (redeemAttempts.size > REDEEM_ATTEMPTS_MAX_KEYS) {
+    const sobra = redeemAttempts.size - REDEEM_ATTEMPTS_MAX_KEYS;
+    let i = 0;
+    for (const k of redeemAttempts.keys()) { if (i++ >= sobra) break; redeemAttempts.delete(k); }
+  }
+}, 60_000).unref();
+
+function redeemGlobalAllow() {
+  const agora = Date.now();
+  if (agora - redeemGlobal.start > 60_000) redeemGlobal = { start: agora, count: 0 };
+  redeemGlobal.count += 1;
+  return redeemGlobal.count <= REDEEM_GLOBAL_MAX_PER_MIN;
+}
+
+/** Registra tentativa abusiva de resgate: log imediato + arquivo (capado). */
+function redeemAbuseNote(ip, username, motivo) {
+  const registro = {
+    at: Date.now(),
+    ip: String(ip || '').slice(0, 64),
+    username: String(username || '').slice(0, 40),
+    motivo: String(motivo || '').slice(0, 40)
+  };
+  try { console.warn('[redeem] abuso ' + registro.motivo + ' ip=' + registro.ip + ' nick=' + registro.username); } catch (_) {}
+  redeemAbuseQueue = redeemAbuseQueue.catch(() => {}).then(() => {
+    try {
+      let lista = [];
+      try {
+        if (fs.existsSync(REDEEM_ABUSE_FILE)) {
+          const b = JSON.parse(fs.readFileSync(REDEEM_ABUSE_FILE, 'utf-8'));
+          if (Array.isArray(b)) lista = b;
+        }
+      } catch (_) { lista = []; }
+      lista.unshift(registro);
+      if (lista.length > REDEEM_ABUSE_MAX) lista.length = REDEEM_ABUSE_MAX;
+      const tmp = REDEEM_ABUSE_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(lista, null, 2), 'utf-8');
+      fs.renameSync(tmp, REDEEM_ABUSE_FILE);
+    } catch (_) {}
+  });
 }
 
 function hashRedeemer(username) {
@@ -165,6 +259,125 @@ function persistManifest(data) {
   const tempFile = `${MANIFEST_FILE}.tmp`;
   fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
   fs.renameSync(tempFile, MANIFEST_FILE);
+  // F02: (re)assina o feed de update a cada publicacao (manifest.sig ao lado).
+  try { signUpdateFeed(); } catch (e) { console.error('[manifest] falha ao assinar: ' + ((e && e.message) || e)); }
+}
+
+// ---------- F02: ASSINATURA DETACHED do feed de update (Ed25519) ----------
+// Problema: o launcher confiava em version/url/sha256 vindos do MESMO feed HTTP —
+// o sha256 nao autenticava nada (chegava na mesma mensagem). Agora o servidor
+// assina o payload canonico com Ed25519 e o launcher verifica contra a chave
+// publica EMBUTIDA no app.
+//
+// Payload canonico (UTF-8), exatamente nesta ordem e com estes separadores:
+//     "<version>|<url>|<sha256>|<size>"
+//   - version = manifest.launcher.latestVersion
+//   - url     = manifest.launcher.downloadUrl
+//   - sha256  = manifest.launcher.sha256 (hex minusculo)
+//   - size    = manifest.launcher.size (inteiro, sem separador de milhar)
+// Algoritmo: Ed25519 puro (Node: crypto.sign(null, Buffer.from(payload), priv)).
+// Chave privada: FORA do repo, em /root/manifest-signing-key.pem (chmod 600),
+//   ou no caminho de MANIFEST_KEY_PATH. Nunca versionada, nunca servida.
+// Chave publica: servida em GET /api/pubkey (e data/manifest.pub) como
+//   { algorithm: 'ed25519', publicKey: '<32 bytes RAW em base64>', keyId }
+//   — e ESSE base64 (32 bytes) que o launcher embute.
+// Assinatura: base64 (64 bytes) em
+//   - campo "sig" do GET /api/update
+//   - header "x-reality-manifest-sig" na resposta do GET /api/update
+//   - arquivo data/manifest.sig (detached, ao lado do manifest.json) servido em
+//     GET /api/manifest.sig
+const MANIFEST_SIG_FILE = path.join(DATA_DIR, 'manifest.sig');
+const MANIFEST_PUB_FILE = path.join(DATA_DIR, 'manifest.pub');
+const MANIFEST_KEY_FILE = String(process.env.MANIFEST_KEY_PATH || '/root/manifest-signing-key.pem');
+const MANIFEST_ALG = 'ed25519';
+const MANIFEST_SIG_HEADER = 'x-reality-manifest-sig';
+let manifestSigCache = { sig: '', keyId: '', payload: '' };
+let manifestKeys = null;
+
+function manifestKeyId(publicB64) {
+  return crypto.createHash('sha256').update(String(publicB64)).digest('hex').slice(0, 16);
+}
+
+function loadManifestKeys() {
+  if (manifestKeys) return manifestKeys;
+  let priv = null;
+  try {
+    if (fs.existsSync(MANIFEST_KEY_FILE)) priv = crypto.createPrivateKey(fs.readFileSync(MANIFEST_KEY_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('[manifest] chave privada ilegivel em ' + MANIFEST_KEY_FILE + ': ' + ((e && e.message) || e));
+    priv = null;
+  }
+  if (!priv) {
+    try {
+      const par = crypto.generateKeyPairSync('ed25519');
+      priv = par.privateKey;
+      fs.writeFileSync(MANIFEST_KEY_FILE, priv.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+      try { fs.chmodSync(MANIFEST_KEY_FILE, 0o600); } catch (_) {}
+      console.log('[manifest] par Ed25519 gerado em ' + MANIFEST_KEY_FILE + ' (fora do repo, chmod 600)');
+    } catch (e) {
+      console.error('[manifest] NAO foi possivel criar a chave de assinatura: ' + ((e && e.message) || e));
+      return null;
+    }
+  }
+  try {
+    const pub = crypto.createPublicKey(priv);
+    const publicPem = pub.export({ type: 'spki', format: 'pem' });
+    const der = pub.export({ type: 'spki', format: 'der' });
+    const publicB64 = Buffer.from(der.subarray(der.length - 32)).toString('base64'); // 32 bytes RAW
+    const keyId = manifestKeyId(publicB64);
+    manifestKeys = { privateKey: priv, publicPem, publicB64, keyId };
+    try {
+      fs.writeFileSync(MANIFEST_PUB_FILE, JSON.stringify({
+        algorithm: MANIFEST_ALG,
+        publicKey: publicB64,
+        keyId,
+        payloadFormat: '<version>|<url>|<sha256>|<size>',
+        createdAt: new Date().toISOString()
+      }, null, 2), 'utf-8');
+    } catch (_) {}
+    console.log('[manifest] assinatura ATIVA alg=' + MANIFEST_ALG + ' keyId=' + keyId + ' pub=' + publicB64);
+    return manifestKeys;
+  } catch (e) {
+    console.error('[manifest] NAO foi possivel exportar a chave publica: ' + ((e && e.message) || e));
+    return null;
+  }
+}
+
+/** Payload canonico do feed de update — precisa bater EXATAMENTE com o launcher. */
+function updateFeedPayload(m) {
+  const l = (m && m.launcher) || {};
+  return [
+    String(l.latestVersion || '1.0.0'),
+    String(l.downloadUrl || ''),
+    String(l.sha256 || ''),
+    String(Number(l.size || 0) || 0)
+  ].join('|');
+}
+
+function signUpdateFeed() {
+  const chaves = loadManifestKeys();
+  if (!chaves) return null;
+  let payload = '';
+  try { payload = updateFeedPayload(readManifest()); } catch (_) { return null; }
+  let sig = '';
+  try {
+    sig = crypto.sign(null, Buffer.from(payload, 'utf-8'), chaves.privateKey).toString('base64');
+  } catch (e) {
+    console.error('[manifest] falha ao assinar: ' + ((e && e.message) || e));
+    return null;
+  }
+  manifestSigCache = { sig, keyId: chaves.keyId, payload };
+  try {
+    const tmp = MANIFEST_SIG_FILE + '.tmp';
+    fs.writeFileSync(tmp, sig, 'utf-8');
+    fs.renameSync(tmp, MANIFEST_SIG_FILE);
+  } catch (_) {}
+  return manifestSigCache;
+}
+
+function manifestSignature() {
+  if (manifestSigCache.sig) return manifestSigCache;
+  return signUpdateFeed();
 }
 
 function requireAdmin(req, res, next) {
@@ -534,11 +747,153 @@ setInterval(() => {
   }
 }, 30 * 1000).unref();
 
+// ---------- F07: autenticacao da presenca ----------
+// Antes: qualquer cliente mandava {uuid,name,capeId} e o indice era reescrito —
+// dava para RENOMEAR outro jogador e para pendurar uma capa PAGA/exclusiva num
+// uuid que nunca resgatou o codigo. Agora:
+//   1) TOKEN SOCIAL (Authorization: Bearer <token>) => identidade DERIVADA DO
+//      TOKEN: o nick vem da conta e o uuid fica AMARRADO a conta no primeiro
+//      heartbeat verificado. Body com uuid/nome de outra pessoa => 403.
+//   2) HMAC POR DISPOSITIVO (X-Reality-Presence-Sig + X-Reality-Presence-Ts,
+//      chave PRESENCE_HMAC_SECRET/DEVICE_HMAC_SECRET) => heartbeat assinado.
+//   3) Sem nenhum dos dois => heartbeat NAO VERIFICADO: so pode CRIAR/REFRESCAR a
+//      propria entrada; nao troca o nome de entrada existente nem o de entrada
+//      verificada, e CAPA EXCLUSIVA/PAGA so entra se a CONTA possui
+//      (ownedCapes do data/coins.json) — o resto e ignorado.
+//   4) Carimbo do servidor: 1 heartbeat por uuid a cada PRESENCE_MIN_INTERVAL_MS
+//      e teto por IP; o indice guarda verified=true/false e o launcher/mod podem
+//      filtrar (?verified=1).
+const PRESENCE_MIN_INTERVAL_MS = Math.max(3_000, Math.floor(Number(process.env.PRESENCE_MIN_INTERVAL_MS) || 4_000));
+const PRESENCE_IP_MAX_PER_MIN = Math.max(30, Math.floor(Number(process.env.PRESENCE_IP_MAX_PER_MIN) || 240));
+const PRESENCE_UNVERIFIED_MAX = Math.max(100, Math.floor(Number(process.env.PRESENCE_UNVERIFIED_MAX) || 2000));
+const PRESENCE_HMAC_SECRET = String(process.env.PRESENCE_HMAC_SECRET || process.env.DEVICE_HMAC_SECRET || '').trim();
+const presenceLastBeat = new Map(); // uuid -> ultimo heartbeat aceito
+setInterval(() => {
+  const agora = Date.now();
+  for (const [k, t] of presenceLastBeat) { if (agora - t > 30 * 60 * 1000) presenceLastBeat.delete(k); }
+}, 5 * 60 * 1000).unref();
+
+/**
+ * F07 — capa PROTEGIDA = qualquer capa do sistema de posse do produto:
+ *  - capas de CODIGO (exclusivas): COIN_CAPE_EXCLUSIVE
+ *  - capas de LOJA (compradas com moedas): COIN_CAPE_PRICES + COIN_CAPE_RETIRED
+ *  - capas TRAVADAS por codigo no launcher (LOCKED_CAPES do redeemCatalog.js):
+ *    reality_bolt, capa_creator_reality, capa_brmc, capa_mundomc
+ * Uma capa protegida so entra na PRESENCA se a CONTA do uuid a possui
+ * (ownedCapes). Capa fora dessa lista e custom/local e continua livre.
+ */
+const COIN_CAPE_LOCKED_CODIGO = ['reality_bolt', 'capa_creator_reality', 'capa_brmc', 'capa_mundomc'];
+function capeIsProtected(id) {
+  const k = String(id || '').trim().toLowerCase();
+  if (!k) return false;
+  if (COIN_CAPE_EXCLUSIVE[k]) return true;
+  if (COIN_CAPE_PRICES[k]) return true;
+  if (Array.isArray(COIN_CAPE_RETIRED) && COIN_CAPE_RETIRED.includes(k)) return true;
+  return COIN_CAPE_LOCKED_CODIGO.includes(k);
+}
+
+/** (compat) — capa exclusiva de codigo. */
+function capeIsExclusive(id) {
+  return !!COIN_CAPE_EXCLUSIVE[id];
+}
+
+/** A CONTA possui essa capa? (fonte de verdade: ownedCapes do data/coins.json) */
+function accountOwnsCape(identKey, capeId) {
+  if (!identKey) return false;
+  try {
+    const dados = readCoins();
+    const acc = dados && dados.accounts ? dados.accounts[identKey] : null;
+    return !!(acc && Array.isArray(acc.ownedCapes) && acc.ownedCapes.includes(capeId));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * F07 — a posse da capa e da CONTA, nao do uuid solto. Chaves possiveis para um
+ * uuid: `offline:<uuid>` (conta offline, mesma chave do redeem/coins) e
+ * `social:<id>` quando o uuid esta amarrado a uma conta social (bindUuid).
+ */
+function capeOwnedByUuid(uuid, capeId) {
+  try {
+    const dados = readCoins();
+    const contas = (dados && dados.accounts) || {};
+    const chaves = ['offline:' + uuid];
+    try {
+      const u = social.findUserByUuid && social.findUserByUuid(uuid);
+      if (u && u.id) chaves.push('social:' + String(u.id));
+    } catch (_) {}
+    return chaves.some((k) => {
+      const a = contas[k];
+      return !!(a && Array.isArray(a.ownedCapes) && a.ownedCapes.includes(capeId));
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+/** HMAC do heartbeat (opcional, quando PRESENCE_HMAC_SECRET/DEVICE_HMAC_SECRET existe). */
+function presenceHmacOk(req, uuid, name, capeId) {
+  if (!PRESENCE_HMAC_SECRET) return false;
+  const sig = String(req.headers['x-reality-presence-sig'] || '').trim().toLowerCase();
+  const ts = Number(req.headers['x-reality-presence-ts'] || 0);
+  if (!sig || !Number.isFinite(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) return false;
+  const msg = [normalizeUuid(uuid), String(name || ''), String(capeId || ''), String(Math.floor(ts))].join('|');
+  let esperado = '';
+  try {
+    esperado = crypto.createHmac('sha256', PRESENCE_HMAC_SECRET).update(msg).digest('hex');
+  } catch (_) {
+    return false;
+  }
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(esperado, 'utf8'));
+  } catch (_) {
+    return false;
+  }
+}
+
 app.post('/api/presence/heartbeat', (req, res) => {
-  const uuid = String((req.body && req.body.uuid) || '').trim();
-  const name = String((req.body && (req.body.name || req.body.username)) || '').trim().slice(0, 32);
-  const capeId = req.body && req.body.capeId != null ? String(req.body.capeId).slice(0, 64) : null;
-  if (!uuid || !/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
+  const body = req.body || {};
+  let uuid = String(body.uuid || '').trim();
+  let name = String(body.name || body.username || '').trim().slice(0, 32);
+  let capeId = body.capeId != null ? String(body.capeId).slice(0, 64) : null;
+
+  // --- (1) token social: identidade DERIVADA DO TOKEN (F06/F07) ---
+  const authHeader = String(req.headers.authorization || '');
+  const tokenRaw = /^Bearer\s+/i.test(authHeader) ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+  let tokenUser = null;
+  if (tokenRaw) {
+    try { tokenUser = social.findUserByToken(tokenRaw); } catch (_) { tokenUser = null; }
+    if (!tokenUser) return res.status(401).json({ ok: false, error: 'invalid_token' });
+  }
+
+  let verified = false;
+  let source = 'anon';
+  let identKey = null;
+
+  if (tokenUser) {
+    const bound = String(tokenUser.uuid || '').trim();
+    if (bound) {
+      if (uuid && normalizeUuid(uuid) !== normalizeUuid(bound)) {
+        return res.status(403).json({ ok: false, error: 'identity_mismatch' });
+      }
+      uuid = bound;
+    } else if (!/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
+      return res.status(400).json({ ok: false, error: 'invalid_uuid' });
+    } else {
+      // amarra o uuid a conta no primeiro heartbeat verificado
+      try { social.bindUuid(tokenRaw, normalizeUuid(uuid)); } catch (_) {}
+    }
+    name = String(tokenUser.username || '').trim().slice(0, 32) || name;
+    verified = true;
+    source = 'social';
+    identKey = 'social:' + String(tokenUser.id || '').slice(0, 70);
+  } else if (presenceHmacOk(req, uuid, name, capeId)) {
+    verified = true;
+    source = 'hmac';
+  }
+
+  if (!/^[0-9a-fA-F-]{32,36}$/.test(uuid)) {
     return res.status(400).json({ error: 'invalid_uuid' });
   }
   // SEGURANCA: name e capeId viram nome de arquivo nos launchers (cape_overrides) - valida aqui tambem.
@@ -554,28 +909,76 @@ app.post('/api/presence/heartbeat', (req, res) => {
   if (banPresence) {
     return res.status(403).json({ ok: false, error: 'banned', ban: banPublicEntry(banPresence) });
   }
+  if (!rateLimit(clientKey(req), 'presence-ip', PRESENCE_IP_MAX_PER_MIN, 60000)) {
+    return res.status(429).json({ ok: false, error: 'too_many_heartbeats_ip' });
+  }
+  const agora = Date.now();
+  const ultimoBeat = presenceLastBeat.get(key) || 0;
+  if (agora - ultimoBeat < PRESENCE_MIN_INTERVAL_MS) {
+    return res.status(429).json({ ok: false, error: 'too_many_heartbeats', retryInMs: PRESENCE_MIN_INTERVAL_MS - (agora - ultimoBeat) });
+  }
+  presenceLastBeat.set(key, agora);
+
+  const prev = onlineRealityUsers.get(key) || null;
+  // Anti-impersonacao: entrada VERIFICADA so e atualizada por heartbeat verificado;
+  // entrada anonima existente nao pode ser RENOMEADA por outro anonimo.
+  if (prev && prev.verified === true && !verified) {
+    return res.status(401).json({ ok: false, error: 'verified_identity_requires_token' });
+  }
+  if (prev && !verified && name && prev.name && name !== prev.name) {
+    return res.status(403).json({ ok: false, error: 'name_locked' });
+  }
+  if (!prev && !verified) {
+    let naoVerificados = 0;
+    for (const info of onlineRealityUsers.values()) if (!info || info.verified !== true) naoVerificados += 1;
+    if (naoVerificados >= PRESENCE_UNVERIFIED_MAX) {
+      return res.status(429).json({ ok: false, error: 'presence_full' });
+    }
+  }
+
+  // CAPA server-authoritative: capa PROTEGIDA (codigo/loja/travada no launcher)
+  // so entra se a CONTA possui (ownedCapes). Sem posse => mantem a capa anterior
+  // (ou null). Capa custom/local continua livre.
+  let capeFinal = capeId;
+  let capeIgnorada = false;
+  if (capeFinal != null && capeFinal !== '' && capeIsProtected(capeFinal)) {
+    const dono = (identKey && accountOwnsCape(identKey, capeFinal)) || capeOwnedByUuid(key, capeFinal);
+    if (!dono) {
+      capeFinal = prev ? (prev.capeId || null) : null;
+      capeIgnorada = true;
+    }
+  }
+
   try { trackDevice(req, name, key); } catch (_) {}
-  const prev = onlineRealityUsers.get(key) || {};
   onlineRealityUsers.set(key, {
-    name: name || prev.name || '',
-    capeId: capeId !== null ? capeId : (prev.capeId || null),
-    lastSeen: Date.now()
+    name: name || (prev && prev.name) || '',
+    capeId: capeFinal !== null ? capeFinal : ((prev && prev.capeId) || null),
+    lastSeen: agora,
+    verified,
+    source
   });
   // Persistência em disco (capas entre reinícios curtos do backend)
   try {
     if (typeof presence !== 'undefined' && presence.heartbeat) {
-      presence.heartbeat({ uuid: key, username: name, capeId: capeId !== null ? capeId : prev.capeId });
+      presence.heartbeat({
+        uuid: key,
+        username: name || (prev && prev.name) || '',
+        capeId: capeFinal !== null ? capeFinal : ((prev && prev.capeId) || null),
+        verified
+      });
     }
   } catch (_) {}
-  res.json({ ok: true });
+  res.json({ ok: true, verified, source, uuid: key, name: name || (prev && prev.name) || '', capeId: capeFinal, capeIgnored: capeIgnorada });
 });
 
-app.get('/api/presence/online', (_req, res) => {
+app.get('/api/presence/online', (req, res) => {
   const now = Date.now();
+  const somenteVerificados = String(req.query.verified || '') === '1';
   const list = [];
   for (const [uuid, info] of onlineRealityUsers.entries()) {
     if (now - info.lastSeen <= PRESENCE_TTL_MS) {
-      list.push({ uuid, name: info.name, capeId: info.capeId || null, launcher: true });
+      if (somenteVerificados && info.verified !== true) continue;
+      list.push({ uuid, name: info.name, capeId: info.capeId || null, verified: info.verified === true, launcher: true });
     } else {
       onlineRealityUsers.delete(uuid);
     }
@@ -600,7 +1003,7 @@ app.get('/api/presence', (req, res) => {
     const undashed = uuid.replace(/-/g, '');
     const wantNorm = want.map((w) => normalizeUuid(w));
     if (!want.length || wantNorm.includes(uuid) || want.includes(uuid) || want.includes(undashed)) {
-      list.push({ uuid, name: info.name, capeId: info.capeId || null, launcher: true });
+      list.push({ uuid, name: info.name, capeId: info.capeId || null, verified: info.verified === true, launcher: true });
     }
   }
   res.json({ ok: true, players: list, users: list });
@@ -615,10 +1018,12 @@ app.get('/api/manifest', (_req, res) => {
   }
 });
 
-/** Feed de update no formato do updateChecker */
+/** Feed de update no formato do updateChecker (+ assinatura Ed25519 — F02) */
 app.get('/api/update', (_req, res) => {
   try {
     const m = readManifest();
+    const assin = manifestSignature();
+    if (assin && assin.sig) res.setHeader(MANIFEST_SIG_HEADER, assin.sig);
     res.json({
       version: m.launcher?.latestVersion || '1.0.0',
       url: m.launcher?.downloadUrl || '',
@@ -626,10 +1031,42 @@ app.get('/api/update', (_req, res) => {
       sha256: m.launcher?.sha256 || '',
       size: Number(m.launcher?.size || 0) || 0,
       mandatory: Boolean(m.launcher?.mandatory),
-      platforms: m.launcher?.platforms || {}
+      platforms: m.launcher?.platforms || {},
+      // F02: assinatura detached do payload canonico <version>|<url>|<sha256>|<size>
+      sig: (assin && assin.sig) || '',
+      sigAlg: MANIFEST_ALG,
+      sigKeyId: (assin && assin.keyId) || ''
     });
   } catch (e) {
     res.status(500).json({ error: 'update_read_failed' });
+  }
+});
+
+/** F02: assinatura detached crua (base64), ao lado do manifest.json. */
+app.get('/api/manifest.sig', (_req, res) => {
+  try {
+    const assin = manifestSignature();
+    if (!assin || !assin.sig) return res.status(503).json({ error: 'signature_unavailable' });
+    res.type('text/plain').send(assin.sig);
+  } catch (_) {
+    res.status(500).json({ error: 'signature_read_failed' });
+  }
+});
+
+/** F02: chave publica de verificacao (o launcher embute este base64). */
+app.get('/api/pubkey', (_req, res) => {
+  try {
+    const chaves = loadManifestKeys();
+    if (!chaves) return res.status(503).json({ error: 'pubkey_unavailable' });
+    res.json({
+      ok: true,
+      algorithm: MANIFEST_ALG,
+      publicKey: chaves.publicB64,
+      keyId: chaves.keyId,
+      payloadFormat: '<version>|<url>|<sha256>|<size>'
+    });
+  } catch (_) {
+    res.status(500).json({ error: 'pubkey_read_failed' });
   }
 });
 
@@ -1053,16 +1490,43 @@ app.get('/api/creators', (_req, res) => {
 });
 
 app.post('/api/redeem', async (req, res) => {
-  const ipR = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  // F16: IP REAL (clientKey) — nunca o X-Forwarded-For cru do cliente.
+  const ipR = clientKey(req);
+  const usernameInicial = String((req.body && req.body.username) || '').trim().slice(0, 40);
+  if (!redeemGlobalAllow()) {
+    redeemAbuseNote(ipR, usernameInicial, 'global_por_minuto');
+    return res.status(429).json({ ok: false, error: 'Too many redeem attempts' });
+  }
   if (!rateLimit(ipR, 'redeem', 10, 60000)) {
+    redeemAbuseNote(ipR, usernameInicial, 'ip_por_minuto');
     return res.status(429).json({ ok: false, error: 'Too many redeem attempts' });
   }
 
   try {
-    if (isRateLimited(req)) return res.status(429).json({ error: 'too_many_attempts' });
+    if (isRateLimited(req)) {
+      redeemAbuseNote(ipR, usernameInicial, 'repeticoes_por_minuto');
+      return res.status(429).json({ error: 'too_many_attempts' });
+    }
     const code = String(req.body?.code || '').trim().toUpperCase().slice(0, 64);
     const username = String(req.body?.username || '').trim().slice(0, 40);
   const socialToken = String((req.headers.authorization || '').replace(/^Bearer /i, '') || '').slice(0, 80);
+    // F16 (camada por CONTA): o mesmo dono nao multiplica tentativas trocando de IP.
+    // A identidade vem do TOKEN (nunca do body) ou do UUID quando nao ha social.
+    let contaRedeem = null;
+    try {
+      if (socialToken && social && typeof social.findUserByToken === 'function') {
+        const u = social.findUserByToken(socialToken);
+        if (u && u.id) contaRedeem = 'acct:' + u.id;
+      }
+      if (!contaRedeem) {
+        const uBruto = String(req.headers['x-reality-uuid'] || (req.body && req.body.uuid) || '').trim();
+        if (/^[0-9a-fA-F-]{32,36}$/.test(uBruto)) contaRedeem = 'uuid:' + normalizeUuid(uBruto);
+      }
+    } catch (_) {}
+    if (contaRedeem && !rateLimit(contaRedeem, 'redeem-conta', REDEEM_ACCT_MAX_PER_MIN, 60000)) {
+      redeemAbuseNote(ipR, username, 'conta_por_minuto');
+      return res.status(429).json({ ok: false, error: 'too_many_attempts_account' });
+    }
     if (!code) return res.status(400).json({ error: 'missing_code' });
     // Identidade da conta (token social ou conta offline/uuid) — usada para creditar
     // a recompensa de moedas do código AQUI no servidor, nunca no config do jogador.
@@ -1441,9 +1905,22 @@ let guardWebhookFileCache = { at: 0, url: '' };
 const guardWebhookDedupe = new Map(); // chave -> último envio (ms)
 let guardWebhookJanela = { start: 0, count: 0 };
 
+/** F17: o backend so faz UMA chamada de saida (webhook do Guard). Nunca para
+ *  loopback/rede privada — se alguem escrever data/guard-webhook.json, nao
+ *  transforma o backend num scanner da rede interna do VPS. */
+function guardWebhookAllowed(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+    return !hostguard.isPrivateHost(u.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
 function guardWebhookUrl() {
   const env = String(process.env.GUARD_WEBHOOK_URL || '').trim();
-  if (/^https?:\/\//i.test(env)) return env;
+  if (/^https?:\/\//i.test(env) && guardWebhookAllowed(env)) return env;
   const agora = Date.now();
   if (agora - guardWebhookFileCache.at > 60000) {
     let url = '';
@@ -1453,7 +1930,7 @@ function guardWebhookUrl() {
         url = String((bruto && bruto.url) || '').trim();
       }
     } catch (_) { url = ''; }
-    guardWebhookFileCache = { at: agora, url: /^https?:\/\//i.test(url) ? url : '' };
+    guardWebhookFileCache = { at: agora, url: guardWebhookAllowed(url) ? url : '' };
   }
   return guardWebhookFileCache.url;
 }
@@ -1909,6 +2386,34 @@ app.get('/api/admin/device-anomalies', requireAdmin, (req, res) => {
   }
 });
 
+/**
+ * F17 — GET/POST /api/admin/validate-host — valida alvo de "status de servidor".
+ * O backend expoe a MESMA regra canonica (hostguard) que o launcher usa, para
+ * operacao/painel e para provar o comportamento. Bloqueia loopback, faixas
+ * privadas/link-local/CGNAT e portas que nao sao de Minecraft.
+ */
+function hostValidateHandler(req, res) {
+  try {
+    const endereco = String((req.body && req.body.address) || req.query.address || '').trim();
+    const check = hostguard.isAllowedMinecraftTarget(endereco);
+    res.status(check.ok ? 200 : 400).json({
+      ok: check.ok,
+      address: endereco.slice(0, 120),
+      host: check.host || null,
+      port: check.port || null,
+      error: check.error || null,
+      policy: {
+        defaultPort: hostguard.DEFAULT_PORT,
+        blocked: ['loopback', 'privado (10/8, 172.16/12, 192.168/16)', 'link-local (169.254/16)', 'CGNAT (100.64/10)', 'multicast/reservado', 'IPv6 fc00::/7, fe80::/10, ::1', 'nomes locais (*.local, localhost, *.lan)', 'portas < 1024 e portas de servico conhecidas']
+      }
+    });
+  } catch (_) {
+    res.status(500).json({ ok: false, error: 'validate_failed' });
+  }
+}
+app.get('/api/admin/validate-host', requireAdmin, hostValidateHandler);
+app.post('/api/admin/validate-host', requireAdmin, hostValidateHandler);
+
 /** GET /api/admin/ranking-time — visao crua do TOP TEMPO (inclui anomalias por conta). */
 app.get('/api/admin/ranking-time', requireAdmin, (req, res) => {
   try {
@@ -1967,6 +2472,133 @@ const RANKING_CREDIT_MAX_SPAN_MS = 6 * 60 * 60 * 1000;             // catch-up m
 const RANKING_DAY_MS = 24 * 60 * 60 * 1000;                        // janela movel do teto diario
 const RANKING_DAY_MAX_MS = 26 * 60 * 60 * 1000;                    // teto creditavel por janela (24h + 2h de folga)
 const RANKING_SEED_MAX_MS = 6 * 60 * 60 * 1000;                    // 1a aparicao: teto da semente
+// ---- F05 (revisao anti-fraude, 2026-10-01) --------------------------------
+// Brechas encontradas revisando o fix anterior com olhos de atacante:
+//  (a) o TETO DIARIO era POR UUID: criar N uuids multiplicava o orcamento e
+//      enchia o TOP 20 com sementes de 6h cada. Agora existe teto diario por
+//      HARDWARE (X-Reality-Device) e por IP, alem do teto por conta, e a
+//      primeira aparicao ganha uma semente AUDITADA de no maximo 30 min (o
+//      resto so entra por tempo de relogio real, que e o que o servidor mede).
+//  (b) o tempo creditado tem que ser INCREMENTAL DE VERDADE: o servidor nunca
+//      usa o "ms" do cliente como total — ele so credita min(pedido,
+//      tempo_real_desde_o_ultimo_credito + folga), agora ainda limitado pelo
+//      teto por hardware/IP do dia.
+//  (c) padroes anomalos viram registro: muitos heartbeats (rate limit batido),
+//      muitos uuid no mesmo hwid, muitos uuid no mesmo IP, intervalo curto.
+//  (d) rate limit GLOBAL (nao-chaveado) no endpoint, como segunda camada.
+const RANKING_SEED_FIRST_MS = Math.max(60_000, Math.floor(Number(process.env.RANKING_SEED_FIRST_MS) || 30 * 60 * 1000));
+const RANKING_FACET_FILE = path.join(DATA_DIR, 'ranking-facets.json');
+const RANKING_HWID_DAY_MAX_MS = Math.max(60 * 60 * 1000, Math.floor(Number(process.env.RANKING_HWID_DAY_MAX_MS) || 26 * 60 * 60 * 1000));
+const RANKING_IP_DAY_MAX_MS = Math.max(60 * 60 * 1000, Math.floor(Number(process.env.RANKING_IP_DAY_MAX_MS) || 48 * 60 * 60 * 1000));
+const RANKING_HWID_MAX_UUIDS = Math.max(1, Math.floor(Number(process.env.RANKING_HWID_MAX_UUIDS) || 2));
+const RANKING_IP_MAX_UUIDS = Math.max(1, Math.floor(Number(process.env.RANKING_IP_MAX_UUIDS) || 6));
+const RANKING_FACET_MAX_KEYS = 20_000;
+const RANKING_GLOBAL_MAX_PER_MIN = Math.max(30, Math.floor(Number(process.env.RANKING_GLOBAL_MAX_PER_MIN) || 300));
+
+/** Anomalias locais com dedupe em memoria (evita 1 arquivo por request abusivo). */
+const rankingAnomalyLocalDedupe = new Map(); // uuid|reason -> ts
+function rankingAnomalyRecordThrottled(uuid, name, reason, detail, ms) {
+  const chave = String(uuid) + '|' + String(reason);
+  const agora = Date.now();
+  const janela = Math.max(60_000, Math.floor(Number(ms) || 10 * 60 * 1000));
+  if (agora - (rankingAnomalyLocalDedupe.get(chave) || 0) < janela) return null;
+  rankingAnomalyLocalDedupe.set(chave, agora);
+  if (rankingAnomalyLocalDedupe.size > 2000) {
+    for (const [k, t] of rankingAnomalyLocalDedupe) { if (agora - t > janela) rankingAnomalyLocalDedupe.delete(k); }
+  }
+  return rankingAnomalyRecord(uuid, name, reason, detail);
+}
+
+/**
+ * F05 (a/c) — tetos por HARDWARE e por IP (janela movel de 24h) + deteccao de
+ * "muitos uuid no mesmo hwid/ip". Consome o credito pedido (o menor entre conta,
+ * hwid e ip) e grava o uuid que recebeu credito em cada dimensao. Escrita atomica.
+ * Retorna { creditado, hwid, ip }.
+ */
+function rankingFacetApply(req, uuid, name, pedido) {
+  const agora = Date.now();
+  let hwid = '';
+  try {
+    const dev = devicePayloadFromRequest(req);
+    hwid = String((dev && (dev.hwid || dev.v1)) || req.headers['x-reality-device'] || '').trim().toLowerCase().slice(0, 64);
+  } catch (_) {
+    hwid = String(req.headers['x-reality-device'] || '').trim().toLowerCase().slice(0, 64);
+  }
+  if (!/^[a-f0-9]{16,64}$/.test(hwid)) hwid = '';
+  const ip = clientKey(req);
+
+  let dados = { hwid: {}, ip: {} };
+  try {
+    if (fs.existsSync(RANKING_FACET_FILE)) {
+      const b = JSON.parse(fs.readFileSync(RANKING_FACET_FILE, 'utf-8'));
+      if (b && typeof b === 'object' && !Array.isArray(b)) dados = { hwid: b.hwid || {}, ip: b.ip || {} };
+    }
+  } catch (_) { dados = { hwid: {}, ip: {} }; }
+
+  let restante = Math.max(0, Math.floor(Number(pedido) || 0));
+
+  function consumir(mapa, id, teto, tetoUuids, rotulo) {
+    if (!id) return;
+    const r = mapa[id] && typeof mapa[id] === 'object' ? mapa[id] : {};
+    let dia = (r.day && typeof r.day === 'object') ? r.day : { windowStart: 0, credited: 0 };
+    if (!dia.windowStart || agora - dia.windowStart > RANKING_DAY_MS) dia = { windowStart: agora, credited: 0 };
+    const uuids = (r.uuids && typeof r.uuids === 'object' && !Array.isArray(r.uuids)) ? r.uuids : {};
+    const jaCreditado = Math.max(0, Math.floor(Number(dia.credited) || 0));
+    const sobra = Math.max(0, teto - jaCreditado);
+    const permitido = Math.min(restante, sobra);
+    if (permitido < restante) {
+      rankingAnomalyRecordThrottled(uuid, name, 'teto_' + rotulo,
+        'pediu +' + Math.round(restante / 1000) + 's; sobra do dia por ' + rotulo + ' ' + Math.round(sobra / 1000) + 's (' + Object.keys(uuids).length + ' uuid(s) nesse ' + rotulo + ')');
+    }
+    if (!uuids[uuid]) uuids[uuid] = agora;
+    const qtdUuids = Object.keys(uuids).length;
+    if (qtdUuids > tetoUuids) {
+      rankingAnomalyRecordThrottled(uuid, name, 'muitos_uuid_por_' + rotulo,
+        qtdUuids + ' uuid(s) com credito no mesmo ' + rotulo + ' em 24h (limite ' + tetoUuids + ')');
+    }
+    mapa[id] = { day: { windowStart: dia.windowStart, credited: jaCreditado + permitido }, uuids };
+    restante = permitido;
+  }
+
+  consumir(dados.hwid, hwid, RANKING_HWID_DAY_MAX_MS, RANKING_HWID_MAX_UUIDS, 'hwid');
+  consumir(dados.ip, ip, RANKING_IP_DAY_MAX_MS, RANKING_IP_MAX_UUIDS, 'ip');
+
+  try {
+    for (const dim of ['hwid', 'ip']) {
+      const chaves = Object.keys(dados[dim]);
+      if (chaves.length > RANKING_FACET_MAX_KEYS) {
+        chaves.sort((a, b) => ((dados[dim][a].day && dados[dim][a].day.windowStart) || 0) - ((dados[dim][b].day && dados[dim][b].day.windowStart) || 0));
+        chaves.slice(0, chaves.length - RANKING_FACET_MAX_KEYS).forEach((k) => { delete dados[dim][k]; });
+      }
+    }
+    const tmp = RANKING_FACET_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(dados, null, 2), 'utf-8');
+    fs.renameSync(tmp, RANKING_FACET_FILE);
+  } catch (_) {}
+  return { creditado: restante, hwid, ip };
+}
+
+/** F05 (c) — cadencia: reportes que PASSAM no rate limit sao contados por conta. */
+const rankingCadence = new Map(); // uuid -> [ts]
+function rankingCadenceNote(uuid, name) {
+  const agora = Date.now();
+  const hist = (rankingCadence.get(uuid) || []).filter((t) => agora - t < 60_000);
+  if (hist.length >= 3) {
+    rankingAnomalyRecordThrottled(uuid, name, 'heartbeat_excessivo', hist.length + 1 + ' reportes aceitos em 60s (o limite da conta e 1/45s) — cliente modificado ou multi-IP');
+  } else if (hist.length) {
+    const gap = agora - hist[hist.length - 1];
+    if (gap < 10_000) {
+      rankingAnomalyRecordThrottled(uuid, name, 'intervalo_irregular', 'reporte ' + Math.round(gap / 1000) + 's depois do anterior (limite da conta: 45s) — multi-IP');
+    }
+  }
+  hist.push(agora);
+  rankingCadence.set(uuid, hist);
+  if (rankingCadence.size > 20_000) {
+    const sobra = rankingCadence.size - 20_000;
+    let i = 0;
+    for (const k of rankingCadence.keys()) { if (i++ >= sobra) break; rankingCadence.delete(k); }
+  }
+}
 const RANKING_TRUNC_EPS_MS = 60 * 1000;                            // truncou > 1 min => anomalia
 const RANKING_ANOMALY_MAX = 500;
 let rankingTimeQueue = Promise.resolve();
@@ -2119,10 +2751,17 @@ app.post('/api/ranking/time', (req, res) => {
     const key = normalizeUuid(uuid);
     // rate limit por IP REAL (clientKey) e por CONTA.
     if (!rateLimit(clientKey(req), 'ranking-time', 1, RANKING_TIME_WINDOW_MS)) {
+      rankingAnomalyRecordThrottled(key, name, 'heartbeat_excesso', 'rate limit de IP batido no POST /api/ranking/time (mais de 1 reporte/60s) — cliente modificado ou multi-IP');
       return res.status(429).json({ ok: false, error: 'too_many_reports' });
     }
     if (!rateLimit(key, 'ranking-time-uuid', 1, RANKING_TIME_UUID_WINDOW_MS)) {
+      rankingAnomalyRecordThrottled(key, name, 'heartbeat_excesso', 'rate limit da CONTA batido no POST /api/ranking/time (mais de 1 reporte/45s) — cliente modificado');
       return res.status(429).json({ ok: false, error: 'too_many_reports' });
+    }
+    // F05 (d): teto GLOBAL (nao-chaveado) do endpoint — segunda camada, para que
+    // trocar de IP/uuid nao derrube o servidor a force de gravacao do arquivo.
+    if (!rateLimit('*global*', 'ranking-time-global', RANKING_GLOBAL_MAX_PER_MIN, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_reports', scope: 'global' });
     }
     try { trackDevice(req, name, key); } catch (_) {}
     withRankingTimeLock(() => {
@@ -2132,8 +2771,11 @@ app.post('/api/ranking/time', (req, res) => {
       let total = 0;
       let creditado = 0;
       if (!prev) {
-        // 1a aparicao pos-fix: semente limitada (excedente nunca e creditado depois).
-        total = Math.min(Math.floor(ms), RANKING_SEED_MAX_MS);
+        // 1a aparicao pos-fix: semente AUDITADA (excedente nunca e creditado
+        // depois). Antes eram ate 6h de graca por uuid novo — criar N uuids
+        // enchia o TOP 20. Agora sao no maximo RANKING_SEED_FIRST_MS e o resto
+        // so entra por TEMPO DE RELOGIO real (heartbeat incremental).
+        total = Math.min(Math.floor(ms), RANKING_SEED_MAX_MS, RANKING_SEED_FIRST_MS);
         creditado = total;
         dados[key] = {
           name,
@@ -2144,9 +2786,9 @@ app.post('/api/ranking/time', (req, res) => {
           day: { windowStart: agora, credited: total },
           anomalies: []
         };
-        if (ms > RANKING_SEED_MAX_MS) {
+        if (ms > RANKING_SEED_FIRST_MS) {
           rankingAnomalyRecord(key, name, 'semente_alta',
-            'primeiro reporte pediu ' + Math.floor(ms / 1000) + 's; teto de semente ' + Math.floor(RANKING_SEED_MAX_MS / 1000) + 's; aceitos ' + Math.floor(total / 1000) + 's');
+            'primeiro reporte pediu ' + Math.floor(ms / 1000) + 's; teto de semente ' + Math.floor(RANKING_SEED_FIRST_MS / 1000) + 's; aceitos ' + Math.floor(total / 1000) + 's');
         }
       } else {
         const baseline = Math.max(
@@ -2189,6 +2831,30 @@ app.post('/api/ranking/time', (req, res) => {
         if (creditado > 0) prev.lastCreditAt = agora;
         prev.day = { windowStart: dia.windowStart, credited: creditedBruto + creditado };
         dados[key] = prev;
+      }
+      // ---- F05 (a): teto por HARDWARE e por IP ----
+      // O credito acima e limitado pela CONTA (janela real + teto diario). Aqui a
+      // mesma pergunta e feita por HARDWARE e por IP: criar varios uuid nao
+      // multiplica o orcamento. O corte vira anomalia (teto_hwid / teto_ip) e o
+      // "dia" da conta e ajustado para refletir so o que entrou de verdade.
+      if (creditado > 0) {
+        try {
+          const facet = rankingFacetApply(req, key, name, creditado);
+          const permitido = Math.max(0, Math.floor(Number(facet.creditado) || 0));
+          if (permitido < creditado) {
+            const cortado = creditado - permitido;
+            creditado = permitido;
+            total = Math.max(0, total - cortado);
+            const alvo = dados[key];
+            if (alvo && alvo.day && typeof alvo.day === 'object') {
+              alvo.day.credited = Math.max(0, Math.floor(Number(alvo.day.credited) || 0) - cortado);
+            }
+            if (alvo) {
+              alvo.lastReportMs = Math.min(Math.floor(Number(alvo.lastReportMs) || 0), Math.floor(ms));
+            }
+          }
+        } catch (_) {}
+        try { rankingCadenceNote(key, name); } catch (_) {}
       }
       const chaves = Object.keys(dados);
       if (chaves.length > RANKING_TIME_MAX_ENTRIES) {
@@ -2610,6 +3276,23 @@ function writeCoins(dados) {
   }
 }
 
+// F09: campos de VALOR de economia no body do cliente sao SEMPRE ignorados (e
+// registrados). O saldo/preco/posse vivem no servidor (data/coins.json + catalogo
+// COIN_CAPE_PRICES/COIN_SEAL_PRICES); o cliente so escolhe o TIPO do evento de
+// earn e o ITEM comprado. Editar o config.json do launcher nao credita nada.
+const COINS_CLIENT_VALUE_FIELDS = ['amount', 'coins', 'price', 'balance', 'saldo', 'total', 'value', 'preco', 'coinsDelta', 'delta', 'grant'];
+function coinsClientValueFields(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  return COINS_CLIENT_VALUE_FIELDS.filter((k) => Object.prototype.hasOwnProperty.call(body, k));
+}
+function coinsNoteIgnoredClientValues(req, body) {
+  const campos = coinsClientValueFields(body);
+  if (campos.length) {
+    try { console.warn('[coins] valores de economia vindos do cliente IGNORADOS em ' + req.path + ': ' + campos.join(', ')); } catch (_) {}
+  }
+  return campos;
+}
+
 /** Identidade da conta: token social > conta offline/uuid (mesmo modelo do Top Tempo). */
 function coinsIdentity(req) {
   try {
@@ -2844,6 +3527,7 @@ app.get('/api/coins', (req, res) => {
 app.post('/api/coins/earn', (req, res) => {
   try {
     const body = req.body || {};
+    coinsNoteIgnoredClientValues(req, body); // F09: amount/coins/price do cliente nao valem nada
     const event = String(body.event || 'launcher').toLowerCase();
     if (!COINS_EARN_EVENTS.has(event)) {
       return res.status(400).json({ ok: false, error: 'invalid_event' });
@@ -2917,6 +3601,7 @@ app.post('/api/coins/earn', (req, res) => {
 app.post('/api/coins/spend', (req, res) => {
   try {
     const body = req.body || {};
+    coinsNoteIgnoredClientValues(req, body); // F09: price/coins/amount do cliente nao valem nada
     const item = String(body.item || '').trim().slice(0, 64);
     const tipo = String(body.tipo || '').trim().toLowerCase();
     const requestId = String(body.requestId || '').trim().slice(0, 64);

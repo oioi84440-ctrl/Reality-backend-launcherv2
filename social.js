@@ -98,10 +98,42 @@ function createSocial(dataDir) {
     return users[id] || null;
   }
 
+  /** F07: dono da conta pelo uuid do Minecraft (amarrado por bindUuid). */
+  function findUserByUuid(uuid) {
+    ensure();
+    const alvo = String(uuid || '').toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(alvo)) return null;
+    const users = readJson(USERS_FILE, {});
+    return Object.values(users).find((u) => String(u.uuid || '').toLowerCase() === alvo) || null;
+  }
+
   function saveUser(u) {
     const users = readJson(USERS_FILE, {});
     users[u.id] = u;
     writeJson(USERS_FILE, users);
+  }
+
+  /**
+   * F07: amarra o uuid do Minecraft a CONTA no primeiro heartbeat VERIFICADO
+   * (token social). Depois disso, o uuid apresentado tem que ser o mesmo da
+   * conta — e o indice de presenca passa a ser derivado da CONTA, nao do body.
+   */
+  function bindUuid(token, uuid) {
+    const user = findUserByToken(token);
+    if (!user) return null;
+    const alvo = String(uuid || '').toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(alvo)) return null;
+    if (user.uuid && user.uuid !== alvo) {
+      const err = new Error('uuid_already_bound');
+      err.status = 409;
+      throw err;
+    }
+    if (!user.uuid) {
+      user.uuid = alvo;
+      user.uuidBoundAt = new Date().toISOString();
+      saveUser(user);
+    }
+    return user;
   }
 
   /** Login/registro automático pelo nick do launcher. */
@@ -493,9 +525,17 @@ function createSocial(dataDir) {
     ensure();
 
     function auth(req, res, next) {
-      const header = req.headers.authorization || '';
-      // SEGURANCA: token so via header Authorization (query string vaza em logs/proxy).
-      const token = header.startsWith('Bearer ') ? header.slice(7) : req.body?.token;
+      const header = String(req.headers.authorization || '');
+      const bodyToken = req.body && typeof req.body.token === 'string' ? req.body.token : '';
+      // F06: a IDENTIDADE e a CONTA dona do token — nunca um nick/uuid do body.
+      // O token so entra por Authorization: Bearer (query string vaza em logs e
+      // proxy; body esconde o token em qualquer log de payload). O caminho
+      // legado por body/query e recusado de forma explicita.
+      if (!header.startsWith('Bearer ') && (bodyToken || req.query && req.query.token)) {
+        return res.status(400).json({ error: 'token_in_body_not_allowed', message: 'Use Authorization: Bearer <token>.' });
+      }
+      if (!header.startsWith('Bearer ')) return res.status(401).json({ error: 'unauthorized' });
+      const token = header.slice(7);
       const user = findUserByToken(token);
       if (!user) return res.status(401).json({ error: 'unauthorized' });
       req.socialUser = user;
@@ -508,7 +548,8 @@ function createSocial(dataDir) {
         const result = loginOrRegister({
           username: req.body?.username,
           displayName: req.body?.displayName,
-          token: req.body?.token || (req.headers.authorization || '').replace(/^Bearer /i, '')
+          // F06: a identidade e o dono do token — o token vem SO do header.
+          token: (req.headers.authorization || '').replace(/^Bearer /i, '')
         });
         res.json(result);
       } catch (e) {
@@ -601,7 +642,7 @@ function createSocial(dataDir) {
     });
   }
 
-  return { mount, ensure, findUserByToken, loginOrRegister };
+  return { mount, ensure, findUserByToken, findUserByUuid, loginOrRegister, bindUuid };
 }
 
 module.exports = { createSocial };

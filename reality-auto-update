@@ -1,0 +1,73 @@
+#!/bin/bash
+# Auto-deploy do backend Reality Client (cron */2).
+#
+# DEFEITO CORRIGIDO (2026-10-01): a versao antiga fazia
+#     git fetch (silencioso) ; LOCAL != origin/main ? -> npm install + pm2 restart
+# Quando o fetch FALHA (o clone nao tem credencial de push/pull), o origin/main
+# fica VELHO para sempre, o guard "LOCAL != REMOTE" fica sempre verdadeiro, e o
+# backend era REINICIADO A CADA 2 MINUTOS sem nenhuma atualizacao — derrubando o
+# servico por alguns segundos (nginx 502) e enchendo o log.
+#
+# Agora:
+#   * so age se o `git fetch` funcionou;
+#   * so prossegue se for fast-forward de verdade;
+#   * so REINICIA se o git pull realmente mudou o HEAD;
+#   * npm install so roda se o package-lock mudou;
+#   * lock (flock) para nao sobrepor execucoes;
+#   * log com rotacao simples (> 2MB trunca).
+set -u
+
+LOG=/var/log/reality-update.log
+STAMP=/var/run/reality-auto-update.stamp
+
+exec 9>"/var/lock/reality-auto-update.lock" || exit 0
+flock -n 9 || exit 0
+
+[ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 2097152 ] && : > "$LOG"
+
+cd /opt/reality-backend || exit 1
+
+if ! git fetch origin main >/dev/null 2>&1; then
+  # Sem rede/credencial: NAO reinicia nada. O codigo rodando e o bom.
+  NOW=$(date +%s)
+  LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
+  if [ $((NOW - LAST)) -gt 1800 ]; then
+    echo "$(date) - fetch do origin falhou (sem credencial/rede); nao vou reiniciar o backend" >> "$LOG"
+    echo "$NOW" > "$STAMP"
+  fi
+  exit 0
+fi
+
+LOCAL=$(git rev-parse HEAD 2>/dev/null)
+REMOTE=$(git rev-parse origin/main 2>/dev/null)
+if [ -z "$LOCAL" ] || [ -z "$REMOTE" ] || [ "$LOCAL" = "$REMOTE" ]; then
+  exit 0
+fi
+
+if ! git merge-base --is-ancestor "$LOCAL" "$REMOTE" 2>/dev/null; then
+  NOW=$(date +%s); LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
+  if [ $((NOW - LAST)) -gt 1800 ]; then
+    echo "$(date) - local NAO e ancestral do origin/main (local=$(git rev-parse --short HEAD) remoto=$(git rev-parse --short origin/main)); nao vou mexer" >> "$LOG"
+    echo "$NOW" > "$STAMP"
+  fi
+  exit 0
+fi
+
+PKG_BEFORE=$(md5sum package-lock.json 2>/dev/null | cut -d' ' -f1)
+if git pull --ff-only >>"$LOG" 2>&1; then
+  NOVO=$(git rev-parse HEAD 2>/dev/null)
+  if [ "$NOVO" = "$LOCAL" ]; then
+    exit 0   # nada mudou de fato: nao reinicia
+  fi
+  echo "$(date) - backend atualizado $(git rev-parse --short "$LOCAL") -> $(git rev-parse --short HEAD)" >> "$LOG"
+else
+  echo "$(date) - git pull --ff-only bloqueado (mudancas locais na arvore?); mantendo o processo atual" >> "$LOG"
+  exit 0
+fi
+
+PKG_AFTER=$(md5sum package-lock.json 2>/dev/null | cut -d' ' -f1)
+if [ "$PKG_BEFORE" != "$PKG_AFTER" ]; then
+  npm install --omit=dev >> "$LOG" 2>&1
+fi
+pm2 restart reality-backend >> "$LOG" 2>&1
+echo "$(date) - OK" >> "$LOG"

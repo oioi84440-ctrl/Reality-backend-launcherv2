@@ -1,0 +1,25 @@
+# Dependencias
+node_modules/
+npm-debug.log*
+
+# Segredos / chaves — NUNCA versionar
+*.pem
+*.key
+.env
+.env.*
+
+# Estado de runtime do backend (dados vivos, nao versionar)
+data/coins.json
+data/presence.json
+data/ranking-*.json
+data/ranking-*.json.bak
+data/bans.json
+data/hwid-map.json
+data/redeem-abuse.json
+data/guard-webhook.json
+data/social/*.tmp
+data/*.tmp
+
+# Backups / artefatos locais
+*.tar.gz
+backups/
