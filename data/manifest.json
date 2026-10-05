@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.83",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.83/Reality.Client.Launcher.Setup.1.6.83.exe",
-    "notes": "Reality Client 1.6.83 — novidades fora, capa nova e configs que ficam\n\n• Configurações dos módulos agora SALVAM de verdade: era o bug de “minhas config somem” ao sair do servidor — todos os ~27 módulos persistem + gravação geral ao fechar o jogo.\n• Capa animada “Reality” NOVA (vídeo novo do logo — reflexo metâlico animando).\n• Aba Novidades removida.\n• Painel TOP TEMPO removido do launcher (o ranking e os prêmios do servidor continuam).\n• API do Modrinth atualizada: checagem de atualizações dos mods mais estável.\n• Os 12 jars do client (1.21 → 1.21.11) foram todos reconstruídos com tudo isso.",
-    "sha256": "0f7cd368239d815abd8e467d381bab73e15200c9ca16cea241e1ce4d27350b0e",
-    "size": 166625517,
+    "latestVersion": "1.6.84",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.84/Reality.Client.Launcher.Setup.1.6.84.exe",
+    "notes": "Reality Client 1.6.84 — o client completo chegou na 1.20.1 e o 1.8.9 ganhou os mods\n\n• O client Reality INTEIRO (menu, HUD, capa animada, zoom...) agora roda na 1.20.1 — antes só tinha fps/perf lá.\n• 1.8.9 agora vem com Reality FPS + Reality Performance (Legacy Fabric).\n• Capa animada “Reality” corrigida: texto centralizado e com o “Y” no lugar certo.\n• 1.20.1 e 1.8.9 aparecem direto na lista de versões do launcher, com Java certo pra cada uma.\n• Correções que travavam o jogo na 1.20.1 (mixins de chat/placa/crosshair) e no 1.8.9.\n• Os 13 jars do client (1.20.1 + 1.21 → 1.21.11) foram todos reconstruídos e revisados.",
+    "sha256": "c2f7fe999c4a66c81519c60ba0fc951bf9ff95a6fc3adbe92e15e00c04f9a786",
+    "size": 176684246,
     "mandatory": false,
     "platforms": {}
   },
@@ -45,7 +45,9 @@
         "acct:u_8eb7f08136675cef",
         "488edf5f6b9cd063dd6415c30dbc42b1d41064adf0bf5bd78bc2c32e6f6eb0b0",
         "c2c53e1f4adf893934d11e0e9efcbbeab7fe45c9492193eda31493c6eff75bee",
-        "23dd4c33ef842aae408d88f732a9f028791aef832d81df047d3a4cb92f5a6413"
+        "23dd4c33ef842aae408d88f732a9f028791aef832d81df047d3a4cb92f5a6413",
+        "6592c9a0474941bfcfee1f1eed0fa5c369670d38d20a8e13843e507c8c982a8d",
+        "869775e0ae9ca071a9748ea916b0e41dff489c05e94a2ec2b8c9c67edb59ae4e"
       ]
     },
     "RLTY-3247-3287-MUNDOMC": {
