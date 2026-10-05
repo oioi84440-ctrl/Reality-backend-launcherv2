@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.84",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.84/Reality.Client.Launcher.Setup.1.6.84.exe",
-    "notes": "Reality Client 1.6.84 — o client completo chegou na 1.20.1 e o 1.8.9 ganhou os mods\n\n• O client Reality INTEIRO (menu, HUD, capa animada, zoom...) agora roda na 1.20.1 — antes só tinha fps/perf lá.\n• 1.8.9 agora vem com Reality FPS + Reality Performance (Legacy Fabric).\n• Capa animada “Reality” corrigida: texto centralizado e com o “Y” no lugar certo.\n• 1.20.1 e 1.8.9 aparecem direto na lista de versões do launcher, com Java certo pra cada uma.\n• Correções que travavam o jogo na 1.20.1 (mixins de chat/placa/crosshair) e no 1.8.9.\n• Os 13 jars do client (1.20.1 + 1.21 → 1.21.11) foram todos reconstruídos e revisados.",
-    "sha256": "c2f7fe999c4a66c81519c60ba0fc951bf9ff95a6fc3adbe92e15e00c04f9a786",
-    "size": 176684246,
+    "latestVersion": "1.6.85",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.85/Reality.Client.Launcher.Setup.1.6.85.exe",
+    "notes": "Reality Client 1.6.85 — proteção anti-adaptação e menos falso positivo\n\n• NOVO: o launcher agora se AUTOVERIFICA (anti-crack). Se alguém alterar qualquer arquivo dele (descompactar/editar o app, patch interno), o caso é registrado no Guard com o nome exato dos arquivos alterados — sem travar nada pra quem não mexeu.\n• O registro de “muitos devices no mesmo IP” parou de dar falso positivo: limite maior (rede compartilhada/CGNAT) e aviso 1x por dia; nada é banido por IP.\n• O aviso de muitas contas no mesmo PC subiu de 5 para 8 no dia (família com várias contas não dá mais aviso à toa); o auto-ban de device segue DESLIGADO.\n• Tudo da 1.6.84 junto: client completo na 1.20.1, realityfps/reality-perf no 1.8.9 e a capa animada corrigida.",
+    "sha256": "9e23f79f5a0efd1b559cadffa4ce39261f3951e77561e8cbd0a44408f5563150",
+    "size": 176685212,
     "mandatory": false,
     "platforms": {}
   },
