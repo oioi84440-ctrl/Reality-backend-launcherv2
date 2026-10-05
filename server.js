@@ -797,13 +797,27 @@ function capeIsExclusive(id) {
   return !!COIN_CAPE_EXCLUSIVE[id];
 }
 
+/**
+ * Capas da conta que ainda VALEM: tira as expiradas (prêmios do TOP TEMPO duram
+ * 30 dias — `capeExpiry[capeId] = timestamp`; sem entrada = vale para sempre).
+ */
+function capesVivasDaConta(acc) {
+  const lista = Array.isArray(acc && acc.ownedCapes) ? acc.ownedCapes : [];
+  const exp = (acc && acc.capeExpiry) || {};
+  const agora = Date.now();
+  return lista.filter((id) => {
+    const e = Number(exp[id]);
+    return !Number.isFinite(e) || e <= 0 || e > agora;
+  });
+}
+
 /** A CONTA possui essa capa? (fonte de verdade: ownedCapes do data/coins.json) */
 function accountOwnsCape(identKey, capeId) {
   if (!identKey) return false;
   try {
     const dados = readCoins();
     const acc = dados && dados.accounts ? dados.accounts[identKey] : null;
-    return !!(acc && Array.isArray(acc.ownedCapes) && acc.ownedCapes.includes(capeId));
+    return !!(acc && capesVivasDaConta(acc).includes(capeId));
   } catch (_) {
     return false;
   }
@@ -825,7 +839,7 @@ function capeOwnedByUuid(uuid, capeId) {
     } catch (_) {}
     return chaves.some((k) => {
       const a = contas[k];
-      return !!(a && Array.isArray(a.ownedCapes) && a.ownedCapes.includes(capeId));
+      return !!(a && capesVivasDaConta(a).includes(capeId));
     });
   } catch (_) {
     return false;
@@ -2111,6 +2125,117 @@ app.get('/api/guard/reports', (req, res) => {
 });
 
 
+// ---------- 1.6.76 — Revisões do Guard ("não é cheat — enviar para revisão") ----------
+// O jogador manda o ARQUIVO bloqueado/avisado (nome + sha256 + motivo) direto
+// pela UI do launcher; aqui guardamos (pro dono revisar) e avisamos no webhook.
+// Um pedido de revisão NUNCA muda o veredito do Guard — só entra na fila humana.
+const GUARD_REVIEWS_FILE = path.join(DATA_DIR, 'guard-reviews.json');
+const MAX_GUARD_REVIEWS = 300;
+const GUARD_REVIEW_MAX_PER_MIN = Math.max(1, Math.floor(Number(process.env.GUARD_REVIEW_MAX_PER_MIN) || 12));
+let guardReviews = null;
+
+function guardReviewsLoad() {
+  if (guardReviews) return guardReviews;
+  guardReviews = [];
+  try {
+    if (fs.existsSync(GUARD_REVIEWS_FILE)) {
+      const b = JSON.parse(fs.readFileSync(GUARD_REVIEWS_FILE, 'utf-8'));
+      if (Array.isArray(b)) guardReviews = b.slice(0, MAX_GUARD_REVIEWS);
+    }
+  } catch (_) { guardReviews = []; }
+  return guardReviews;
+}
+
+function guardReviewsSave() {
+  try {
+    const tmp = GUARD_REVIEWS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(guardReviewsLoad().slice(0, MAX_GUARD_REVIEWS), null, 2), 'utf-8');
+    fs.renameSync(tmp, GUARD_REVIEWS_FILE);
+  } catch (_) {}
+}
+
+function guardReviewWebhookSend(review) {
+  let url = '';
+  try { url = guardWebhookUrl(); } catch (_) { url = ''; }
+  if (!url) return 'disabled';
+  const payload = {
+    username: 'Reality Guard',
+    embeds: [{
+      title: '📩 Revisão de mod enviada por jogador',
+      color: 0x3498DB,
+      fields: [
+        { name: 'Arquivo', value: '`' + String(review.file || '?').slice(0, 100) + '`', inline: true },
+        { name: 'Jogador', value: '`' + String(review.username || 'unknown').slice(0, 32) + '`', inline: true },
+        { name: 'Motivo do Guard', value: String(review.reason || '—').slice(0, 200), inline: false },
+        { name: 'Detalhe', value: String(review.detalhe || '—').slice(0, 240), inline: false },
+        { name: 'sha256', value: '`' + String(review.sha256 || 'indisponível').slice(0, 64) + '`', inline: false },
+        { name: 'Launcher', value: '`' + String(review.launcherVersion || '?').slice(0, 40) + '`', inline: true },
+        { name: 'Horário (Brasília)', value: guardBrasiliaTime(review.at), inline: true }
+      ],
+      footer: { text: 'review ' + review.id }
+    }]
+  };
+  const host = guardWebhookHost(url);
+  guardWebhookPost(url, payload).then((r) => {
+    if (r && r.status >= 200 && r.status < 300) console.log('[guard] webhook revisão enviado (' + host + ') ' + review.id);
+    else console.log('[guard] webhook revisão falhou (' + host + ') status=' + (r && r.status));
+  }).catch(() => {});
+  return 'sent';
+}
+
+app.post('/api/guard/review', (req, res) => {
+  try {
+    if (!rateLimit(clientKey(req), 'guard-review', GUARD_REVIEW_MAX_PER_MIN, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_reviews' });
+    }
+    const body = req.body || {};
+    const file = String(body.file || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
+    if (!file) return res.status(400).json({ ok: false, error: 'missing_file' });
+    const sha = String(body.sha256 || '').toLowerCase();
+    const review = {
+      id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      at: Date.now(),
+      file,
+      sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : null,
+      reason: String(body.reason || '').replace(/[\r\n\t]/g, ' ').slice(0, 120),
+      detalhe: String(body.detalhe || '').replace(/[\r\n\t]/g, ' ').slice(0, 240),
+      kind: String(body.kind || 'blocked').slice(0, 20),
+      version: String(body.version || '').slice(0, 32),
+      launcherVersion: String(body.launcherVersion || '').slice(0, 32),
+      username: String(body.username || body.name || 'unknown').replace(/[\r\n\t]/g, ' ').slice(0, 32),
+      uuid: String(body.uuid || '').slice(0, 64)
+    };
+    const lista = guardReviewsLoad();
+    lista.unshift(review);
+    if (lista.length > MAX_GUARD_REVIEWS) lista.length = MAX_GUARD_REVIEWS;
+    guardReviewsSave();
+    console.log('[guard] revisão', review.file, 'de', review.username);
+    let webhook = 'disabled';
+    try { webhook = guardReviewWebhookSend(review); } catch (_) { webhook = 'error'; }
+    res.json({ ok: true, id: review.id, webhook });
+  } catch (e) {
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.get('/api/guard/reviews', (req, res) => {
+  // Aceita a GUARD_ADMIN_KEY OU o token admin rotacionado (ADMIN_TOKEN) — o dono
+  // já tem esse token; sem NENHUM dos dois, leitura fica desabilitada (503).
+  const adminToken = String(process.env.ADMIN_TOKEN || '');
+  const aceitos = [GUARD_ADMIN_KEY, adminToken].filter(Boolean);
+  if (!aceitos.length) {
+    return res.status(503).json({ ok: false, error: 'guard_admin_disabled_no_key' });
+  }
+  const key = String(req.query.key || req.headers['x-admin-key'] || '');
+  if (!aceitos.includes(key)) {
+    return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10) || 50));
+  const lista = guardReviewsLoad();
+  res.json({ ok: true, total: lista.length, reviews: lista.slice(0, limit) });
+});
+
+
 // ---------- Mapa HWID -> contas (aprendido do X-Reality-Device pos-fix) ----------
 // Quando o launcher novo (com HWID de hardware) aparecer, CADA contato registra
 // <hwid> -> { names, uuids, firstSeen, lastSeen } em <data>/hwid-map.json. Serve
@@ -2154,10 +2279,16 @@ setInterval(hwidMapFlush, 30000).unref();
 const DEVICE_ANOMALY_FILE = path.join(DATA_DIR, 'device-anomalies.json');
 const DEVICE_ANOMALY_MAX = 500;
 const DEVICE_ACCT_WINDOW_MS = Math.max(60 * 60 * 1000, Math.floor(Number(process.env.HWID_ACCT_WINDOW_MS) || 24 * 60 * 60 * 1000));
-const DEVICE_ACCT_ANOMALY_MIN = Math.max(2, Math.floor(Number(process.env.HWID_ACCT_ANOMALY_MIN) || 5));
+// 05/10: 5 -> 8. Familia/PC compartilhado com 3-4 contas é normal e estava gerando
+// aviso; 8+ contas num dia continua sendo o sinal bom de evasão.
+const DEVICE_ACCT_ANOMALY_MIN = Math.max(2, Math.floor(Number(process.env.HWID_ACCT_ANOMALY_MIN) || 8));
 const DEVICE_AUTOBAN_MIN = Math.max(0, Math.floor(Number(process.env.HWID_AUTOBAN_MIN_ACCOUNTS) || 0));
 const DEVICE_ANOM_DEDUPE_MS = 6 * 60 * 60 * 1000;
-const IP_DEVICE_ANOMALY_MIN = Math.max(3, Math.floor(Number(process.env.HWID_IP_ANOMALY_MIN) || 25));
+// 05/10: 25 -> 75 e aviso 1x por dia por IP. No Brasil muito provedor usa CGNAT:
+// centenas de jogadores legítimos dividem o mesmo IP e o aviso de 25 virava spam
+// de falso positivo. O REGISTRO continua no arquivo; o webhook é que não repete.
+const IP_DEVICE_ANOMALY_MIN = Math.max(3, Math.floor(Number(process.env.HWID_IP_ANOMALY_MIN) || 75));
+const IP_ANOM_DEDUPE_MS = 24 * 60 * 60 * 1000;
 const deviceAnomDedupe = new Map(); // hwid -> ultimo aviso (ms)
 let ipDevicesDia = { dia: '', porIp: new Map() }; // ip -> Set(hwid)
 const ipAnomDedupe = new Map();     // ip|dia -> ultimo aviso (ms)
@@ -2277,16 +2408,16 @@ function deviceCheckAnomaly(hwid, e, req) {
         set.add(hwid);
         if (set.size >= IP_DEVICE_ANOMALY_MIN) {
           const chave = ip + '|' + dia;
-          if (agora - (ipAnomDedupe.get(chave) || 0) >= DEVICE_ANOM_DEDUPE_MS) {
+          if (agora - (ipAnomDedupe.get(chave) || 0) >= IP_ANOM_DEDUPE_MS) {
             ipAnomDedupe.set(chave, agora);
             if (ipAnomDedupe.size > 2000) {
-              for (const [k, t] of ipAnomDedupe) { if (agora - t > DEVICE_ANOM_DEDUPE_MS) ipAnomDedupe.delete(k); }
+              for (const [k, t] of ipAnomDedupe) { if (agora - t > IP_ANOM_DEDUPE_MS) ipAnomDedupe.delete(k); }
             }
             deviceAnomalyAppend({ at: agora, kind: 'ip_multi_device', ip, hwids: set.size });
             deviceAnomalyNotify('🌐 Muitos devices no mesmo IP (hoje)', [
               { name: 'HWIDs hoje', value: String(set.size), inline: true },
               { name: 'IP', value: '`' + ip.slice(0, 48) + '`', inline: true }
-            ], 'limite HWID_IP_ANOMALY_MIN=' + IP_DEVICE_ANOMALY_MIN);
+            ], 'observacao (nada e banido por IP; CGNAT/rede compartilhada infla). limite=' + IP_DEVICE_ANOMALY_MIN + ', aviso 1x/dia');
           }
         }
         if (ipDevicesDia.porIp.size > 5000) ipDevicesDia.porIp.clear(); // defensivo
@@ -2629,6 +2760,9 @@ function readRankingTime() {
         limpo[String(uuid)] = {
           name,
           ms,
+          // base = baseline da TEMPORADA (reset do TOP TEMPO): o valor exibido no
+          // ranking é ms - base; o ms bruto continua guardando o total de sempre.
+          base: Math.max(0, Math.floor(Number(info.base) || 0)),
           updatedAt: Math.max(0, Math.floor(Number(info.updatedAt) || 0)),
           lastCreditAt: Math.max(0, Math.floor(Number(info.lastCreditAt) || 0)),
           lastReportMs: Math.max(0, Math.floor(Number(info.lastReportMs) || 0)),
@@ -2780,6 +2914,7 @@ app.post('/api/ranking/time', (req, res) => {
         dados[key] = {
           name,
           ms: total,
+          base: 0,
           updatedAt: agora,
           lastCreditAt: agora,
           lastReportMs: Math.floor(ms),
@@ -2826,6 +2961,7 @@ app.post('/api/ranking/time', (req, res) => {
         }
         prev.name = name;
         prev.ms = total;
+        prev.base = Math.max(0, Math.floor(Number(prev.base) || 0));
         prev.updatedAt = agora;
         prev.lastReportMs = Math.max(baseline, Math.floor(ms));
         if (creditado > 0) prev.lastCreditAt = agora;
@@ -2866,9 +3002,10 @@ app.post('/api/ranking/time', (req, res) => {
       } else {
         writeRankingTime(dados);
       }
-      return { total, creditado };
+      return { total, creditado, base: Math.max(0, Math.floor(Number(dados[key] && dados[key].base) || 0)) };
     }).then((r) => {
-      try { res.json({ ok: true, ms: r.total, credited: r.creditado }); } catch (_) {}
+      // ms da resposta = TEMPORADA (ms bruto - baseline do reset), igual ao GET.
+      try { res.json({ ok: true, ms: Math.max(0, r.total - r.base), credited: r.creditado }); } catch (_) {}
     }).catch(() => {
       try { res.status(500).json({ ok: false, error: 'ranking_save_failed' }); } catch (_) {}
     });
@@ -2884,7 +3021,12 @@ app.get('/api/ranking/time', (req, res) => {
     const limit = Math.min(50, Math.max(1, Number.isFinite(pedido) ? pedido : 20));
     const dados = readRankingTime();
     const lista = Object.entries(dados)
-      .map(([uuid, info]) => ({ name: info.name, ms: info.ms, updatedAt: info.updatedAt || 0 }))
+      .map(([uuid, info]) => ({
+        name: info.name,
+        // valor da TEMPORADA (o reset do TOP TEMPO grava base = total antigo)
+        ms: Math.max(0, info.ms - Math.max(0, Math.floor(Number(info.base) || 0))),
+        updatedAt: info.updatedAt || 0
+      }))
       .sort((a, b) => (b.ms - a.ms) || (a.updatedAt - b.updatedAt) || String(a.name).localeCompare(String(b.name)));
     const top = lista.slice(0, limit).map((item, i) => ({ name: item.name, ms: item.ms, updatedAt: item.updatedAt || 0, pos: i + 1 }));
     res.json({ ok: true, top, total: lista.length });
@@ -3048,6 +3190,63 @@ const COIN_CAPE_EXCLUSIVE = {
     animated: true,
     price: 0,
     forSale: false
+  },
+  capa_reality_anim: {
+    name: 'Reality (animada)',
+    rarity: 'mythic',
+    color: '#a78bfa',
+    color2: '#2e1065',
+    gradient: 'linear-gradient(135deg,#c4b5fd,#8b5cf6 45%,#4c1d95)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: true,
+    hidden: true,   // privada do dono: fora do catálogo público
+    private: true,
+    animated: true,
+    price: 0,
+    forSale: false
+  },
+  // TOP TEMPO (prêmio do ranking): concedidas pelo SERVIDOR por 30 DIAS — não são
+  // de código (fromCode:false) e ficam fora do catálogo público (hidden). Quem
+  // controla a expiração é capesVivasDaConta (capeExpiry na conta).
+  capa_top1_tempo: {
+    name: 'Top 1 Tempo',
+    rarity: 'legendary',
+    color: '#fbbf24',
+    color2: '#78350f',
+    gradient: 'linear-gradient(135deg,#fde68a,#f59e0b 45%,#78350f)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: false,
+    hidden: true,
+    price: 0,
+    forSale: false
+  },
+  capa_top2_tempo: {
+    name: 'Top 2 Tempo',
+    rarity: 'legendary',
+    color: '#e5e7eb',
+    color2: '#334155',
+    gradient: 'linear-gradient(135deg,#f1f5f9,#94a3b8 45%,#334155)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: false,
+    hidden: true,
+    price: 0,
+    forSale: false
+  },
+  capa_top3_tempo: {
+    name: 'Top 3 Tempo',
+    rarity: 'legendary',
+    color: '#d97706',
+    color2: '#431407',
+    gradient: 'linear-gradient(135deg,#fcd34d,#b45309 45%,#431407)',
+    icon: '✦',
+    exclusive: true,
+    fromCode: false,
+    hidden: true,
+    price: 0,
+    forSale: false
   }
 };
 
@@ -3075,6 +3274,9 @@ const RED_CAPE_CODES = [
 
 /** O código ÚNICO da CAPA ANIMADA privada do dono (não sai em lugar nenhum). */
 const ANIMATED_CAPE_CODE = 'RLTYPINDOWN';
+
+/** 1.6.79: código da capa ANIMADA "Reality" (logo) — privada do dono. */
+const REALITY_ANIM_CODE = 'RLTYLOGO';
 
 function betaTestCodeEntry() {
   return {
@@ -3115,6 +3317,9 @@ function exclusiveCodeCatalog() {
     out.push([code, exclusiveCapeCodeEntry('Reality Client', 'Reality Client', 'capa_reality_display')]);
   }
   out.push([ANIMATED_CAPE_CODE, exclusiveCapeCodeEntry('Dono do Reality', 'Dono do Reality Client', 'capa_pindown_cat')]);
+  // 1.6.79: capa ANIMADA "Reality" (logo). As capas do TOP TEMPO NÃO são de
+  // código: o SERVIDOR concede na conta por 30 dias (ver capesVivasDaConta).
+  out.push([REALITY_ANIM_CODE, exclusiveCapeCodeEntry('Dono do Reality', 'Dono do Reality Client', 'capa_reality_anim')]);
   return out;
 }
 
@@ -3203,6 +3408,21 @@ function coinsSanitizeAccount(bruto) {
     coins,
     ownedCapes: lista(bruto.ownedCapes),
     ownedSeals: lista(bruto.ownedSeals),
+    // Expiração das capas de PRÊMIO (TOP TEMPO, 30 dias): id -> timestamp ms.
+    // SEM isso o sanitizador descartava o campo na leitura E na gravação, e a
+    // capa de prêmio nunca expirava (bug pego pelo teste rc-teste-expiry.js).
+    capeExpiry: (() => {
+      const out = {};
+      const e = bruto.capeExpiry;
+      if (e && typeof e === 'object' && !Array.isArray(e)) {
+        for (const [k, v] of Object.entries(e)) {
+          if (!/^[a-z0-9_-]{1,64}$/i.test(String(k))) continue;
+          const n = Math.floor(Number(v) || 0);
+          if (n > 0) out[String(k)] = n;
+        }
+      }
+      return out;
+    })(),
     ledger: {
       lastEarnAt: Math.max(0, Math.floor(Number(l.lastEarnAt) || 0)),
       lastEarnEvent: String(l.lastEarnEvent || '').slice(0, 16),
@@ -3389,7 +3609,7 @@ function coinsPublicState(acc, ident) {
     ok: true,
     account: { kind: acc.kind, name: acc.name || (ident && ident.name) || '' },
     coins: Math.max(0, Math.floor(Number(acc.coins) || 0)),
-    ownedCapes: Array.isArray(acc.ownedCapes) ? acc.ownedCapes.slice() : [],
+    ownedCapes: capesVivasDaConta(acc),
     ownedSeals: Array.isArray(acc.ownedSeals) ? acc.ownedSeals.slice() : [],
     // Selos EXCLUSIVOS (só por código): catálogo próprio p/ UI (arte) + o que a
     // conta já possui. Fora de prices.seals de propósito (não estão à venda).
@@ -3399,7 +3619,7 @@ function coinsPublicState(acc, ident) {
     // prices.capes de propósito (não estão à venda). A capa PRIVADA (hidden)
     // não entra no catálogo público — aparece só no ownedCapes de quem resgatou.
     exclusiveCapes: coinsExclusiveCapes(),
-    ownedCapesExclusive: (Array.isArray(acc.ownedCapes) ? acc.ownedCapes : []).filter((id) => !!COIN_CAPE_EXCLUSIVE[id]),
+    ownedCapesExclusive: capesVivasDaConta(acc).filter((id) => !!COIN_CAPE_EXCLUSIVE[id]),
     earn: {
       lastEarnAt: ledger.lastEarnAt || 0,
       nextInMs: proximo,
