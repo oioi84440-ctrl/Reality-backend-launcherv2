@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.86",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.86/Reality.Client.Launcher.Setup.1.6.86.exe",
-    "notes": "Reality Client 1.6.86 — launcher blindado contra extração e modificação\n\n• O código do launcher agora vai em BYTECODE (não é mais possível simplesmente descompactar e ler o código); o visual/scripts do app também foram ofuscados.\n• O executável recusa iniciar se o pacote interno for remontado/alterado (verificação de integridade embutida) e bloqueia modo de depuração/injeção de Node.\n• O launcher continua se autoverificando a cada boot: qualquer arquivo interno alterado é registrado no Guard com o nome do arquivo — e quem não mexeu não vê nada.\n• Tudo das rodadas anteriores junto (1.6.85/1.6.84): anti-tamper, menos falso positivo, client na 1.20.1, fps/perf no 1.8.9 e capa animada corrigida.",
-    "sha256": "f41c1021fc83774eadd5f044d50c524e3179da1fb7ef4bd6c467e41f5d1b9c6e",
-    "size": 177466494,
+    "latestVersion": "1.6.87",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.87/Reality.Client.Launcher.Setup.1.6.87.exe",
+    "notes": "Reality Client 1.6.87 — CORREÇÃO IMPORTANTE\n\n• Corrigido o problema da 1.6.86 em que a interface do launcher ficava sem conexão (aparecia uma versão antiga e dava erro em tudo).\n• Toda a blindagem anti-extração continua: código em bytecode, visual ofuscado e o executável que se recusa a iniciar se for alterado.\n• É só atualizar — o launcher puxa essa versão sozinho.",
+    "sha256": "dfd343cb9942f67d659025a1d92a1a21655ead9cd0bf7f54b65e862aa0358a48",
+    "size": 177467384,
     "mandatory": false,
     "platforms": {}
   },
