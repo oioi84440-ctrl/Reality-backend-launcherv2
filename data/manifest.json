@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.85",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.85/Reality.Client.Launcher.Setup.1.6.85.exe",
-    "notes": "Reality Client 1.6.85 — proteção anti-adaptação e menos falso positivo\n\n• NOVO: o launcher agora se AUTOVERIFICA (anti-crack). Se alguém alterar qualquer arquivo dele (descompactar/editar o app, patch interno), o caso é registrado no Guard com o nome exato dos arquivos alterados — sem travar nada pra quem não mexeu.\n• O registro de “muitos devices no mesmo IP” parou de dar falso positivo: limite maior (rede compartilhada/CGNAT) e aviso 1x por dia; nada é banido por IP.\n• O aviso de muitas contas no mesmo PC subiu de 5 para 8 no dia (família com várias contas não dá mais aviso à toa); o auto-ban de device segue DESLIGADO.\n• Tudo da 1.6.84 junto: client completo na 1.20.1, realityfps/reality-perf no 1.8.9 e a capa animada corrigida.",
-    "sha256": "9e23f79f5a0efd1b559cadffa4ce39261f3951e77561e8cbd0a44408f5563150",
-    "size": 176685212,
+    "latestVersion": "1.6.86",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.86/Reality.Client.Launcher.Setup.1.6.86.exe",
+    "notes": "Reality Client 1.6.86 — launcher blindado contra extração e modificação\n\n• O código do launcher agora vai em BYTECODE (não é mais possível simplesmente descompactar e ler o código); o visual/scripts do app também foram ofuscados.\n• O executável recusa iniciar se o pacote interno for remontado/alterado (verificação de integridade embutida) e bloqueia modo de depuração/injeção de Node.\n• O launcher continua se autoverificando a cada boot: qualquer arquivo interno alterado é registrado no Guard com o nome do arquivo — e quem não mexeu não vê nada.\n• Tudo das rodadas anteriores junto (1.6.85/1.6.84): anti-tamper, menos falso positivo, client na 1.20.1, fps/perf no 1.8.9 e capa animada corrigida.",
+    "sha256": "f41c1021fc83774eadd5f044d50c524e3179da1fb7ef4bd6c467e41f5d1b9c6e",
+    "size": 177466494,
     "mandatory": false,
     "platforms": {}
   },
