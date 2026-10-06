@@ -2154,11 +2154,47 @@ function guardReviewsSave() {
   } catch (_) {}
 }
 
+// Anti-spam do alerta de TAMPER (mesmo jogador+alteração não repete dentro da janela).
+const GUARD_TAMPER_DEDUP_MS = Math.max(60000, (Number(process.env.GUARD_TAMPER_DEDUP_MIN) || 30) * 60000);
+const guardTamperSeen = new Map();
+
 function guardReviewWebhookSend(review) {
   let url = '';
   try { url = guardWebhookUrl(); } catch (_) { url = ''; }
   if (!url) return 'disabled';
-  const payload = {
+  const host = guardWebhookHost(url);
+  const isTamper = String(review.kind || '') === 'tamper';
+  if (isTamper) {
+    // Sem falso positivo: só chega aqui quando o hash de um arquivo mudou (ou fuse flipado).
+    // Anti-spam: mesmo jogador + mesma alteração não repete o aviso dentro da janela.
+    const chave = String(review.uuid || review.username || '?') + '|' + String(review.detalhe || '').slice(0, 120);
+    const agora = Date.now();
+    const visto = guardTamperSeen.get(chave) || 0;
+    if (agora - visto < GUARD_TAMPER_DEDUP_MS) {
+      console.log('[guard] webhook TAMPER adiado (dedupe) ' + review.id);
+      return 'dedupe';
+    }
+    guardTamperSeen.set(chave, agora);
+    if (guardTamperSeen.size > 400) {
+      for (const [k, t] of guardTamperSeen) if (agora - t > GUARD_TAMPER_DEDUP_MS) guardTamperSeen.delete(k);
+    }
+  }
+  const payload = isTamper ? {
+    username: 'Reality Guard',
+    embeds: [{
+      title: '🚨 TENTATIVA DE MODIFICAÇÃO DO LAUNCHER',
+      color: 0xE74C3C,
+      description: 'Um launcher alterado tentou rodar (verificação por hash assinado — se chegou aqui, algo mudou de verdade). NADA foi banido automaticamente: revise.',
+      fields: [
+        { name: 'O que foi alterado', value: '`' + String(review.detalhe || '?').slice(0, 220) + '`', inline: false },
+        { name: 'Jogador', value: '`' + String(review.username || 'unknown').slice(0, 32) + '`', inline: true },
+        { name: 'UUID', value: '`' + String(review.uuid || '—').slice(0, 40) + '`', inline: true },
+        { name: 'Launcher', value: '`' + String(review.launcherVersion || '?').slice(0, 40) + '`', inline: true },
+        { name: 'Horário (Brasília)', value: guardBrasiliaTime(review.at), inline: true }
+      ],
+      footer: { text: 'tamper ' + review.id }
+    }]
+  } : {
     username: 'Reality Guard',
     embeds: [{
       title: '📩 Revisão de mod enviada por jogador',
@@ -2175,10 +2211,10 @@ function guardReviewWebhookSend(review) {
       footer: { text: 'review ' + review.id }
     }]
   };
-  const host = guardWebhookHost(url);
   guardWebhookPost(url, payload).then((r) => {
-    if (r && r.status >= 200 && r.status < 300) console.log('[guard] webhook revisão enviado (' + host + ') ' + review.id);
-    else console.log('[guard] webhook revisão falhou (' + host + ') status=' + (r && r.status));
+    const tipo = isTamper ? 'TAMPER' : 'revisão';
+    if (r && r.status >= 200 && r.status < 300) console.log('[guard] webhook ' + tipo + ' enviado (' + host + ') ' + review.id);
+    else console.log('[guard] webhook ' + tipo + ' falhou (' + host + ') status=' + (r && r.status));
   }).catch(() => {});
   return 'sent';
 }
