@@ -4,7 +4,7 @@
   "launcher": {
     "latestVersion": "1.6.88",
     "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.88/Reality.Client.Launcher.Setup.1.6.88.exe",
-    "notes": "Reality Client 1.6.88 — reforço de segurança\n\n• O launcher agora também detecta se o próprio executável for manipulado (tentativa de desligar as proteções) e registra com o nome exato.\n• Instaladores antigos foram removidos do ar — agora só existe a versão protegida.\n• É só atualizar.",
+    "notes": "",
     "sha256": "33c0087a2fa83ec7208a848414d3886ae6f88c49bba605cf0301b813d70c8303",
     "size": 177468471,
     "mandatory": false,
