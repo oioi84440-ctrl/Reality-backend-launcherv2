@@ -2219,6 +2219,103 @@ function guardReviewWebhookSend(review) {
   return 'sent';
 }
 
+// ---- Crash reports (1.6.90): o launcher manda o motivo REAL de cada crash/recuperação.
+const CRASH_REPORTS_FILE = path.join(DATA_DIR, 'crash-reports.json');
+const MAX_CRASH_REPORTS = 300;
+const CRASH_DEDUP_MS = Math.max(60000, (Number(process.env.CRASH_DEDUP_MIN) || 30) * 60000);
+const crashSeen = new Map();
+let crashReports = null;
+
+function crashReportsLoad() {
+  if (crashReports) return crashReports;
+  crashReports = [];
+  try {
+    if (fs.existsSync(CRASH_REPORTS_FILE)) {
+      const b = JSON.parse(fs.readFileSync(CRASH_REPORTS_FILE, 'utf-8'));
+      if (Array.isArray(b)) crashReports = b.slice(0, MAX_CRASH_REPORTS);
+    }
+  } catch (_) { crashReports = []; }
+  return crashReports;
+}
+
+function crashReportsSave() {
+  try {
+    const tmp = CRASH_REPORTS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(crashReportsLoad().slice(0, MAX_CRASH_REPORTS), null, 2), 'utf-8');
+    fs.renameSync(tmp, CRASH_REPORTS_FILE);
+  } catch (_) {}
+}
+
+function crashWebhookSend(rep) {
+  let url = '';
+  try { url = guardWebhookUrl(); } catch (_) { url = ''; }
+  if (!url) return 'disabled';
+  const host = guardWebhookHost(url);
+  const chave = String(rep.kind || '?') + '|' + String(rep.reason || '').slice(0, 60) + '|' + String(rep.launcherVersion || '');
+  const agora = Date.now();
+  if (agora - (crashSeen.get(chave) || 0) < CRASH_DEDUP_MS) {
+    console.log('[guard] webhook CRASH adiado (dedupe) ' + rep.id);
+    return 'dedupe';
+  }
+  crashSeen.set(chave, agora);
+  if (crashSeen.size > 400) {
+    for (const [k, t] of crashSeen) if (agora - t > CRASH_DEDUP_MS) crashSeen.delete(k);
+  }
+  const payload = {
+    username: 'Reality Guard',
+    embeds: [{
+      title: '💥 Crash reportado — ' + String(rep.kind || '?').slice(0, 24),
+      color: 0xE67E22,
+      fields: [
+        { name: 'Motivo', value: '`' + String(rep.reason || '—').slice(0, 120) + '`', inline: false },
+        { name: 'Detalhe', value: '`' + String(rep.detalhe || '—').slice(0, 220) + '`', inline: false },
+        { name: 'Jogador', value: '`' + String(rep.username || '?').slice(0, 32) + '`', inline: true },
+        { name: 'Launcher', value: '`' + String(rep.launcherVersion || '?').slice(0, 32) + '`', inline: true },
+        { name: 'HWID', value: '`' + String(rep.hwid || '—').slice(0, 40) + '`', inline: true },
+        { name: 'Horário (Brasília)', value: guardBrasiliaTime(rep.at), inline: true }
+      ],
+      footer: { text: 'crash ' + rep.id }
+    }]
+  };
+  guardWebhookPost(url, payload).then((r) => {
+    if (r && r.status >= 200 && r.status < 300) console.log('[guard] webhook CRASH enviado (' + host + ') ' + rep.id);
+    else console.log('[guard] webhook CRASH falhou (' + host + ') status=' + (r && r.status));
+  }).catch(() => {});
+  return 'sent';
+}
+
+app.post('/api/crash-report', (req, res) => {
+  try {
+    if (!rateLimit(clientKey(req), 'crash-report', 30, 60000)) {
+      return res.status(429).json({ ok: false, error: 'too_many_crash_reports' });
+    }
+    const b = req.body || {};
+    const rep = {
+      id: 'c_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      at: Date.now(),
+      kind: String(b.kind || 'unknown').replace(/[\r\n\t]/g, ' ').slice(0, 24),
+      reason: String(b.reason || '').replace(/[\r\n\t]/g, ' ').slice(0, 120),
+      exitCode: Number(b.exitCode) || 0,
+      detalhe: String(b.detalhe || '').replace(/[\r\n\t]/g, ' ').slice(0, 400),
+      ops: String(b.ops || '').replace(/[\r\n\t]/g, ' ').slice(0, 200),
+      launcherVersion: String(b.launcherVersion || '').slice(0, 32),
+      username: String(b.username || 'unknown').replace(/[\r\n\t]/g, ' ').slice(0, 32),
+      uuid: String(b.uuid || '').slice(0, 64),
+      hwid: String(b.hwid || '').slice(0, 64)
+    };
+    const lista = crashReportsLoad();
+    lista.unshift(rep);
+    if (lista.length > MAX_CRASH_REPORTS) lista.length = MAX_CRASH_REPORTS;
+    crashReportsSave();
+    console.log('[guard] crash', rep.kind, 'de', rep.username, rep.launcherVersion);
+    let webhook = 'disabled';
+    try { webhook = crashWebhookSend(rep); } catch (_) { webhook = 'error'; }
+    res.json({ ok: true, id: rep.id, webhook });
+  } catch (e) {
+    res.status(500).json({ ok: false });
+  }
+});
+
 app.post('/api/guard/review', (req, res) => {
   try {
     if (!rateLimit(clientKey(req), 'guard-review', GUARD_REVIEW_MAX_PER_MIN, 60000)) {
