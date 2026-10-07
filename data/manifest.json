@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.89",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.89/Reality.Client.Launcher.Setup.1.6.89.exe",
-    "notes": "Reality Client 1.6.89 — interface blindada\n\n• A interface do launcher agora também vai em bytecode (como o resto do código) — não é mais possível recuperar o código visual por ferramentas de desofuscação.\n• Tudo igual por fora: mesmas telas, mesmos recursos.\n• É só atualizar.",
-    "sha256": "2a1b790a1650d4a266252f6c2204ed04ae840bc2c2153ba55edcd198cdaa9620",
-    "size": 177057417,
+    "latestVersion": "1.6.90",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.90/Reality.Client.Launcher.Setup.1.6.90.exe",
+    "notes": "Reality Client 1.6.90 — estabilidade do launcher\n\n• Se a interface travar/fechar sozinha, o launcher agora se RECUPERA sozinho em segundos (recarrega a janela) em vez de ficar morta.\n• Cada travamento/crash agora é registrado automaticamente para a equipe achar a causa exata.\n• É só atualizar.",
+    "sha256": "29c10e7775e2e61977ed32bf725c823b0a71f5b16d46a48aecbe8d8dae99cd7a",
+    "size": 177059681,
     "mandatory": false,
     "platforms": {}
   },
