@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.7.1",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.1/Reality.Client.Launcher.Setup.1.7.1.exe",
-    "notes": "Reality Client 1.7.1 — ajustes do reporte de crash\n\n• Relatórios de sessão anterior agora olham só as últimas 48h (fim dos \"10 erros\" antigos empacotados).\n• HWID incluído no relatório de sessão anterior.\n• Tentativa de cheat barrada pelo Guard agora aparece como categoria própria (\"guard-block\") no painel da equipe.\n• É só atualizar.",
-    "sha256": "b3f2387a4a737c43822c2e15ef19b907cab3a82b100279ec2256fa8319caae65",
-    "size": 177062802,
+    "latestVersion": "1.7.2",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.2/Reality.Client.Launcher.Setup.1.7.2.exe",
+    "notes": "Reality Client 1.7.2 — novos clientes em todas as 14 versões\n\n• Cliente novo 1.7.1 (multiversion) em TODAS as versões: 1.20.1 e 1.21 até 1.21.11.\n• NOVIDADE: a 1.8.9 agora tem o cliente COMPLETO (antes só tinha FPS/Perf).\n• É só atualizar e jogar.",
+    "sha256": "8fe5f04c83af4e61e2caf412acd2bd42aaada833adb7c860693953e4d790babc",
+    "size": 176964231,
     "mandatory": false,
     "platforms": {}
   },
