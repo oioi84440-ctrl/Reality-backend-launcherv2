@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.6.90",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.6.90/Reality.Client.Launcher.Setup.1.6.90.exe",
-    "notes": "Reality Client 1.6.90 — estabilidade do launcher\n\n• Se a interface travar/fechar sozinha, o launcher agora se RECUPERA sozinho em segundos (recarrega a janela) em vez de ficar morta.\n• Cada travamento/crash agora é registrado automaticamente para a equipe achar a causa exata.\n• É só atualizar.",
-    "sha256": "29c10e7775e2e61977ed32bf725c823b0a71f5b16d46a48aecbe8d8dae99cd7a",
-    "size": 177059681,
+    "latestVersion": "1.7.0",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.0/Reality.Client.Launcher.Setup.1.7.0.exe",
+    "notes": "Reality Client 1.7.0 — GRANDE ATUALIZAÇÃO: estabilidade total\n\n• Anti-crash de GPU: se a placa de vídeo travar o launcher no boot, ele desliga a aceleração sozinho no próximo boot e volta a funcionar.\n• Interface travada >20s = o launcher se recarrega sozinho (não fica mais congelado).\n• Se algo der errado de vez, aparece uma tela clara em vez de janela morta — e o relatório vai pra equipe automaticamente.\n• Fim dos erros de download bloqueado (EPERM de antivírus): retry automático.\n• Java: instalação resistente a arquivo bloqueado (o bug que derrubava o launch em alguns PCs).\n• Erros de launch (conta/Guard/Java) agora chegam no painel da equipe com o motivo certo.\n• É só atualizar.",
+    "sha256": "f5896b4eecd8442b886645f2ef1113725a0029a5229ddd9b29b371a9f6b459a8",
+    "size": 177062327,
     "mandatory": false,
     "platforms": {}
   },
