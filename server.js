@@ -2251,7 +2251,7 @@ function crashWebhookSend(rep) {
   try { url = guardWebhookUrl(); } catch (_) { url = ''; }
   if (!url) return 'disabled';
   const host = guardWebhookHost(url);
-  const chave = String(rep.kind || '?') + '|' + String(rep.reason || '').slice(0, 60) + '|' + String(rep.launcherVersion || '');
+  const chave = String(rep.kind || '?') + '|' + String(rep.reason || '').slice(0, 60) + '|' + String(rep.launcherVersion || '') + '|' + String(rep.username || '?');
   const agora = Date.now();
   if (agora - (crashSeen.get(chave) || 0) < CRASH_DEDUP_MS) {
     console.log('[guard] webhook CRASH adiado (dedupe) ' + rep.id);
