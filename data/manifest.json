@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.7.0",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.0/Reality.Client.Launcher.Setup.1.7.0.exe",
-    "notes": "Reality Client 1.7.0 — GRANDE ATUALIZAÇÃO: estabilidade total\n\n• Anti-crash de GPU: se a placa de vídeo travar o launcher no boot, ele desliga a aceleração sozinho no próximo boot e volta a funcionar.\n• Interface travada >20s = o launcher se recarrega sozinho (não fica mais congelado).\n• Se algo der errado de vez, aparece uma tela clara em vez de janela morta — e o relatório vai pra equipe automaticamente.\n• Fim dos erros de download bloqueado (EPERM de antivírus): retry automático.\n• Java: instalação resistente a arquivo bloqueado (o bug que derrubava o launch em alguns PCs).\n• Erros de launch (conta/Guard/Java) agora chegam no painel da equipe com o motivo certo.\n• É só atualizar.",
-    "sha256": "f5896b4eecd8442b886645f2ef1113725a0029a5229ddd9b29b371a9f6b459a8",
-    "size": 177062327,
+    "latestVersion": "1.7.1",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.1/Reality.Client.Launcher.Setup.1.7.1.exe",
+    "notes": "Reality Client 1.7.1 — ajustes do reporte de crash\n\n• Relatórios de sessão anterior agora olham só as últimas 48h (fim dos \"10 erros\" antigos empacotados).\n• HWID incluído no relatório de sessão anterior.\n• Tentativa de cheat barrada pelo Guard agora aparece como categoria própria (\"guard-block\") no painel da equipe.\n• É só atualizar.",
+    "sha256": "b3f2387a4a737c43822c2e15ef19b907cab3a82b100279ec2256fa8319caae65",
+    "size": 177062802,
     "mandatory": false,
     "platforms": {}
   },
