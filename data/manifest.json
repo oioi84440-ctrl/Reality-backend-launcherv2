@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.7.3",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.3/Reality.Client.Launcher.Setup.1.7.3.exe",
-    "notes": "Reality Client 1.7.3 — correção do 1.8.9\n\n• 1.8.9 agora roda no Java 21 (o cliente novo exige) — o launcher baixa/configura sozinho.\n• legacy-fabric-api incluído junto do client (era o que faltava pro 1.8.9 abrir).\n• É só atualizar.",
-    "sha256": "b397682c314c4c33136eb1388e2a5002b7a65f5f943d2b9915a4adc477b05640",
-    "size": 176969547,
+    "latestVersion": "1.7.4",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.4/Reality.Client.Launcher.Setup.1.7.4.exe",
+    "notes": "Reality Client 1.7.4 — correção dos crashes + launcher mais leve\n\n• CORRIGIDO o crash \"Ticking Particle\" (acontecia com fogos/partículas à distância em qualquer versão): o otimizador de partículas não cancela mais partículas que o jogo usa o retorno — client atualizado nas 13 versões.\n• Launcher mais leve: menos travadinhas na UI (otimização de I/O de arquivos no boot e no launch; log sem escrita síncrona).\n• Guard: corrigido um furo onde um nome tipo \"wurstpack\" escapava do bloqueio por nome.\n• É só atualizar.",
+    "sha256": "77fc46d297dc9b5bb3168c08261bbc97da492efc71f4a8131edd772dfe80bd18",
+    "size": 176941023,
     "mandatory": false,
     "platforms": {}
   },
