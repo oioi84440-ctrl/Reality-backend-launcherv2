@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.7.5",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.5/Reality.Client.Launcher.Setup.1.7.5.exe",
-    "notes": "Reality Client 1.7.5 — launcher leve no boot (fim do \"não está respondendo\")\n\n• O launcher não trava mais no boot: a verificação dos arquivos do client (que lia 60MB+ em toda abertura) agora é rápida (1x por dia completa, o resto rápida) — era isso que fazia o \"não está respondendo\" em PCs mais lentos.\n• Boot mais suave em máquinas com HD: as checagens rodam em blocos, sem segurar a tela.\n• É só atualizar.",
-    "sha256": "5f324fcf8dc56eaa804ba74ec2d23dedfa2109de5c0fd27351ed17f992278a37",
-    "size": 176941999,
+    "latestVersion": "1.7.6",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.6/Reality.Client.Launcher.Setup.1.7.6.exe",
+    "notes": "Reality Client 1.7.6 — fim do \"não está respondendo\" de vez\n\n• O launcher não trava mais na primeira abertura depois de atualizar: a cópia dos arquivos do client (60MB) agora é assíncrona — antes travava em rajadas de até 2s (o famoso \"não está respondendo\").\n• Mesmo em PC com HD lento, a atualização roda lisa.\n• É só atualizar.",
+    "sha256": "b79e14ee5ec660baa9f6251526c94ee7bf52af2b477867c4d26650298ca61ae3",
+    "size": 176944822,
     "mandatory": false,
     "platforms": {}
   },
