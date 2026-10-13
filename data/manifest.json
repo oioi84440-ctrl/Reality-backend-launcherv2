@@ -2,11 +2,11 @@
   "version": 5,
   "updatedAt": "2026-10-03T15:23:31.883Z",
   "launcher": {
-    "latestVersion": "1.7.7",
-    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.7/Reality.Client.Launcher.Setup.1.7.7.exe",
-    "notes": "Atualização 1.7.7\n\n- CORRIGIDO o crash que acontecia em EVENTOS (fogos na tela): causa era o mod de FPS que cancelava partículas de fogo (crash \"Ticking Particle\"). Agora nunca mais.\n- Correção vale para TODAS as versões (1.8.9 até 1.21.11).\n- Launcher mais estável (mesmas correções de desempenho da 1.7.6).\n\nBom jogo!",
-    "sha256": "7c8318c4e20575de333fef32b03a46df607d6eefe5bb939b6160ab4e446a3287",
-    "size": 176943516,
+    "latestVersion": "1.7.9",
+    "downloadUrl": "https://github.com/oioi84440-ctrl/Reality-backend-launcherv2/releases/download/1.7.9/Reality.Client.Launcher.Setup.1.7.9.exe",
+    "notes": "Atualização 1.7.9\n\n- NOVIDADE: modo MANUTENÇÃO do launcher (aviso em tela cheia quando a equipe precisa mexer em algo — o jogo fica bloqueado de forma segura nesse período).\n- Correção do crash em eventos (fogos) reforçada.\n- Melhorias internas de estabilidade.\n\nBom jogo!",
+    "sha256": "bc34ad9f97d71dfdc2ca0eb8952928b6e2f675ff736980b97493669f805d7f56",
+    "size": 176948669,
     "mandatory": false,
     "platforms": {}
   },
@@ -333,5 +333,10 @@
         "k:offline:53e9764f-4ccc-4913-88df-04437bbb9571"
       ]
     }
+  },
+  "maintenance": {
+    "on": false,
+    "message": "Voltamos em breve — melhorias em andamento!",
+    "at": 1791921640512
   }
 }
